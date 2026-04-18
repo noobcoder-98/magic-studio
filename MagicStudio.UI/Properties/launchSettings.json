@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "MagicStudio.UI (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "MagicStudio.UI (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

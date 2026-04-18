@@ -1,0 +1,22 @@
+<Solution>
+  <Configurations>
+    <Platform Name="ARM64" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/MagicStudio.FFmpegPlus/">
+    <Project Path="MagicStudio.FFmpegPlus.Native/MagicStudio.FFmpegPlus.Native.vcxproj">
+      <Platform Solution="*|ARM64" Project="x64" />
+    </Project>
+    <Project Path="MagicStudio.FFmpegPlus.Wrapper/MagicStudio.FFmpegPlus.Wrapper.vcxproj">
+      <Platform Solution="*|ARM64" Project="x64" />
+    </Project>
+    <Project Path="MagicStudio.FFmpegPlus/MagicStudio.FFmpegPlus.csproj" />
+  </Folder>
+  <Project Path="MagicStudio.UI/MagicStudio.UI.csproj">
+    <Platform Solution="*|ARM64" Project="ARM64" />
+    <Platform Solution="*|x64" Project="x64" />
+    <Platform Solution="*|x86" Project="x86" />
+    <Deploy />
+  </Project>
+</Solution>
