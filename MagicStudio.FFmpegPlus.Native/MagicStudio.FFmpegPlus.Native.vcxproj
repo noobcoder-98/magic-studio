@@ -25,6 +25,7 @@
     <RootNamespace>MagicStudioFFmpegPlusNative</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\FFmpegPaths.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
@@ -140,8 +141,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
+    <ClInclude Include="FrameQueue.h" />
+    <ClInclude Include="AudioRenderer.h" />
+    <ClInclude Include="MediaDecoder.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="FrameQueue.cpp" />
+    <ClCompile Include="AudioRenderer.cpp" />
+    <ClCompile Include="MediaDecoder.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>

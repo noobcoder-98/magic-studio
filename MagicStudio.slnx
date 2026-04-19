@@ -5,10 +5,10 @@
     <Platform Name="x86" />
   </Configurations>
   <Folder Name="/MagicStudio.FFmpegPlus/">
-    <Project Path="MagicStudio.FFmpegPlus.Native/MagicStudio.FFmpegPlus.Native.vcxproj">
+    <Project Path="MagicStudio.FFmpegPlus.Native/MagicStudio.FFmpegPlus.Native.vcxproj" Id="32350b6d-d039-42ac-9ef3-cfc2f3a35a28">
       <Platform Solution="*|ARM64" Project="x64" />
     </Project>
-    <Project Path="MagicStudio.FFmpegPlus.Wrapper/MagicStudio.FFmpegPlus.Wrapper.vcxproj">
+    <Project Path="MagicStudio.FFmpegPlus.Wrapper/MagicStudio.FFmpegPlus.Wrapper.vcxproj" Id="eab31989-9e57-42c8-8687-06511caaa514">
       <Platform Solution="*|ARM64" Project="x64" />
     </Project>
     <Project Path="MagicStudio.FFmpegPlus/MagicStudio.FFmpegPlus.csproj" />

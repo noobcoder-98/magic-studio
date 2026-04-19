@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Configure the path to your FFmpeg build.
+  Set the FFmpegDir environment variable or edit the default below.
+  Expected layout:
+    $(FFmpegDir)\include\libavcodec\avcodec.h
+    $(FFmpegDir)\lib\avcodec.lib
+    $(FFmpegDir)\bin\avcodec-61.dll  (copy to output alongside the DLL)
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <FFmpegDir Condition="'$(FFmpegDir)'==''">$(MSBuildThisFileDirectory)ffmpeg</FFmpegDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(FFmpegDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(FFmpegDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

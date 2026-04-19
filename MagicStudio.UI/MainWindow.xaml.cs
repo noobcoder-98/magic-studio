@@ -1,31 +1,37 @@
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
-using Microsoft.UI.Xaml.Data;
-using Microsoft.UI.Xaml.Input;
-using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Navigation;
 using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices.WindowsRuntime;
-using Windows.Foundation;
-using Windows.Foundation.Collections;
+using Windows.Storage.Pickers;
 
-// To learn more about WinUI, the WinUI project structure,
-// and more about our project templates, see: http://aka.ms/winui-project-info.
+namespace MagicStudio.UI;
 
-namespace MagicStudio.UI
+public sealed partial class MainWindow : Window
 {
-    /// <summary>
-    /// An empty window that can be used on its own or navigated to within a Frame.
-    /// </summary>
-    public sealed partial class MainWindow : Window
+    public MainWindow()
     {
-        public MainWindow()
-        {
-            InitializeComponent();
-        }
+        InitializeComponent();
+        ExtendsContentIntoTitleBar = true;
+    }
+
+    private async void OpenFile_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new FileOpenPicker();
+        // Required on WinUI 3: associate the picker with the window handle.
+        WinRT.Interop.InitializeWithWindow.Initialize(picker,
+            WinRT.Interop.WindowNative.GetWindowHandle(this));
+
+        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.VideosLibrary;
+        picker.FileTypeFilter.Add(".mp4");
+        picker.FileTypeFilter.Add(".mkv");
+        picker.FileTypeFilter.Add(".avi");
+        picker.FileTypeFilter.Add(".mov");
+        picker.FileTypeFilter.Add(".webm");
+        picker.FileTypeFilter.Add("*");
+
+        var file = await picker.PickSingleFileAsync();
+        if (file is null) return;
+
+        _player.Pause();
+        if (_player.Open(file.Path))
+            _player.Play();
     }
 }

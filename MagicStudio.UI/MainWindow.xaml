@@ -7,13 +7,25 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
-    Title="MagicStudio.UI">
+    Title="MagicStudio">
 
     <Window.SystemBackdrop>
         <MicaBackdrop />
     </Window.SystemBackdrop>
 
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
 
+        <!-- Toolbar -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="8,4"
+                    Background="{ThemeResource LayerFillColorDefaultBrush}">
+            <Button Content="Open File" Click="OpenFile_Click" />
+        </StackPanel>
+
+        <!-- Player -->
+        <local:MediaPlayerControl x:Name="_player" Grid.Row="1" />
     </Grid>
 </Window>
