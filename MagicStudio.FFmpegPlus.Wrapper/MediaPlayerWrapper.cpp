@@ -38,21 +38,21 @@ Int64 MediaPlayer::GetAudioPositionUs() {
 
 bool MediaPlayer::TryGetFrame(Int64 audioPtsUs, [Out] FrameData^% frame) {
     std::vector<uint8_t> bgra;
-    int w = 0, h = 0;
+    int width = 0, height = 0;
 
-    if (!_decoder->TryGetFrameForTime(static_cast<int64_t>(audioPtsUs), bgra, w, h))
+    if (!_decoder->TryGetFrameForTime(static_cast<int64_t>(audioPtsUs), bgra, width, height))
         return false;
 
-    auto fd = gcnew FrameData();
-    fd->Width  = w;
-    fd->Height = h;
+    auto frameData = gcnew FrameData();
+    frameData->Width  = width;
+    frameData->Height = height;
 
     array<Byte>^ managed = gcnew array<Byte>(static_cast<int>(bgra.size()));
     pin_ptr<Byte> pin = &managed[0];
     memcpy(pin, bgra.data(), bgra.size());
-    fd->BgraData = managed;
+    frameData->BgraData = managed;
 
-    frame = fd;
+    frame = frameData;
     return true;
 }
 

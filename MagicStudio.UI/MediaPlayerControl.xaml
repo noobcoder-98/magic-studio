@@ -16,10 +16,10 @@
 
         <!-- Video surface -->
         <canvas:CanvasControl
-            x:Name="_canvas"
+            x:Name="VideoCanvas"
             Grid.Row="0"
-            Draw="_Canvas_Draw"
-            CreateResources="_Canvas_CreateResources" />
+            Draw="VideoCanvas_Draw"
+            CreateResources="VideoCanvas_CreateResources" />
 
         <!-- Controls bar -->
         <Grid Grid.Row="1" Padding="8,4" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
@@ -29,21 +29,21 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <Button x:Name="_playPauseBtn"
+            <Button x:Name="PlayPauseButton"
                     Grid.Column="0"
                     Content="&#xE768;"
                     FontFamily="Segoe MDL2 Assets"
                     Width="40" Height="40"
-                    Click="_PlayPause_Click" />
+                    Click="PlayPauseButton_Click" />
 
-            <Slider x:Name="_progressSlider"
+            <Slider x:Name="ProgressSlider"
                     Grid.Column="1"
                     Margin="8,0"
                     Minimum="0" Maximum="1" Value="0"
                     VerticalAlignment="Center"
-                    ValueChanged="_Progress_ValueChanged" />
+                    ValueChanged="ProgressSlider_ValueChanged" />
 
-            <TextBlock x:Name="_timeText"
+            <TextBlock x:Name="TimeText"
                        Grid.Column="2"
                        Text="0:00 / 0:00"
                        VerticalAlignment="Center"

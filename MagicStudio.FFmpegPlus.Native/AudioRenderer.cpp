@@ -85,8 +85,8 @@ int64_t AudioRenderer::GetPositionUs() const {
     UINT64 played = state.SamplesPlayed;
     UINT64 base   = _baseSamplesPlayed.load(std::memory_order_relaxed);
     if (played < base) return _basePtsUs.load(std::memory_order_relaxed);
-    int64_t elapsed_us = static_cast<int64_t>((played - base) * 1'000'000LL / _sampleRate);
-    return _basePtsUs.load(std::memory_order_relaxed) + elapsed_us;
+    int64_t elapsedUs = static_cast<int64_t>((played - base) * 1'000'000LL / _sampleRate);
+    return _basePtsUs.load(std::memory_order_relaxed) + elapsedUs;
 }
 
 void AudioRenderer::RenderThread() {
@@ -117,10 +117,10 @@ void AudioRenderer::RenderThread() {
             XAUDIO2_VOICE_STATE state{};
             _sourceVoice->GetState(&state);
             _baseSamplesPlayed.store(state.SamplesPlayed, std::memory_order_relaxed);
-            _basePtsUs.store(chunk.pts_us, std::memory_order_relaxed);
+            _basePtsUs.store(chunk.ptsUs, std::memory_order_relaxed);
         });
 
-        auto* ctx    = new BufferContext{std::move(chunk.pcm_s16)};
+        auto* ctx    = new BufferContext{std::move(chunk.pcmS16)};
         XAUDIO2_BUFFER buf{};
         buf.AudioBytes = static_cast<UINT32>(ctx->data.size());
         buf.pAudioData = ctx->data.data();

@@ -38,12 +38,12 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
         bool ok = _player.Open(path);
         if (ok)
         {
-            double dur = _player.Duration;
+            double duration = _player.Duration;
             _suppressSlider = true;
-            _progressSlider.Maximum = dur > 0 ? dur : 1;
-            _progressSlider.Value   = 0;
+            ProgressSlider.Maximum = duration > 0 ? duration : 1;
+            ProgressSlider.Value   = 0;
             _suppressSlider = false;
-            UpdateTimeLabel(0, dur);
+            UpdateTimeLabel(0, duration);
         }
         return ok;
     }
@@ -53,27 +53,27 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
         if (_player is null) return;
         _player.Play();
         _playing = true;
-        _playPauseBtn.Content = "\uE769"; // Pause glyph
-        _canvas.Invalidate();
+        PlayPauseButton.Content = "\uE769"; // Pause glyph
+        VideoCanvas.Invalidate();
     }
 
     public void Pause()
     {
         _player?.Pause();
         _playing = false;
-        _playPauseBtn.Content = "\uE768"; // Play glyph
+        PlayPauseButton.Content = "\uE768"; // Play glyph
     }
 
     // -------------------------------------------------------------------------
     // Win2D canvas callbacks
     // -------------------------------------------------------------------------
 
-    private void _Canvas_CreateResources(CanvasControl sender, CanvasCreateResourcesEventArgs args)
+    private void VideoCanvas_CreateResources(CanvasControl sender, CanvasCreateResourcesEventArgs args)
     {
         // Nothing to pre-allocate; _frameBitmap is created lazily on first frame.
     }
 
-    private void _Canvas_Draw(CanvasControl sender, CanvasDrawEventArgs args)
+    private void VideoCanvas_Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
         if (_player is null || !_playing)
             return;
@@ -97,7 +97,6 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
                 _frameBitmap.SetPixelBytes(bgra);
             }
 
-            // Update progress slider (≈ every frame, not worth throttling here).
             UpdateProgress(pts);
         }
 
@@ -108,7 +107,6 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
                 new Rect(0, 0, sender.ActualWidth, sender.ActualHeight));
         }
 
-        // Keep the render loop alive while playing.
         if (_playing)
             sender.Invalidate();
     }
@@ -117,13 +115,13 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
     // Controls
     // -------------------------------------------------------------------------
 
-    private void _PlayPause_Click(object sender, RoutedEventArgs e)
+    private void PlayPauseButton_Click(object sender, RoutedEventArgs e)
     {
         if (_playing) Pause();
         else          Play();
     }
 
-    private void _Progress_ValueChanged(object sender,
+    private void ProgressSlider_ValueChanged(object sender,
         Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         if (_suppressSlider || _player is null) return;
@@ -135,13 +133,13 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
     // Helpers
     // -------------------------------------------------------------------------
 
-    private void UpdateProgress(long pts_us)
+    private void UpdateProgress(long ptsUs)
     {
-        double seconds = pts_us / 1_000_000.0;
+        double seconds  = ptsUs / 1_000_000.0;
         double duration = _player?.Duration ?? 0;
 
         _suppressSlider = true;
-        _progressSlider.Value = Math.Clamp(seconds, 0, _progressSlider.Maximum);
+        ProgressSlider.Value = Math.Clamp(seconds, 0, ProgressSlider.Maximum);
         _suppressSlider = false;
 
         UpdateTimeLabel(seconds, duration);
@@ -157,7 +155,7 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
 
     private void UpdateTimeLabel(double current, double total)
     {
-        _timeText.Text = $"{FormatTime(current)} / {FormatTime(total)}";
+        TimeText.Text = $"{FormatTime(current)} / {FormatTime(total)}";
     }
 
     // -------------------------------------------------------------------------

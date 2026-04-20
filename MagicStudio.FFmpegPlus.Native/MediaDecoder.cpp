@@ -151,15 +151,15 @@ int64_t MediaDecoder::GetAudioPositionUs() const {
     return 0;
 }
 
-bool MediaDecoder::TryGetFrameForTime(int64_t audio_pts_us,
+bool MediaDecoder::TryGetFrameForTime(int64_t audioPtsUs,
                                       std::vector<uint8_t>& outBgra,
                                       int& outWidth, int& outHeight) {
     // Pop every frame whose presentation time has passed.
     // The last one popped is the correct frame to display.
     while (true) {
-        auto front_pts = _frameQueue->PeekFrontPts();
-        if (!front_pts) break;
-        if (*front_pts > audio_pts_us) break; // frame is in the future
+        auto frontPts = _frameQueue->PeekFrontPts();
+        if (!frontPts) break;
+        if (*frontPts > audioPtsUs) break; // frame is in the future
 
         auto frame = _frameQueue->Pop();
         if (!frame) break;
@@ -203,7 +203,7 @@ void MediaDecoder::DecodeLoop() {
                           0, _videoHeight, dst, stride);
 
                 VideoFrame vf;
-                vf.pts_us = TsToUs(frame->best_effort_timestamp, _videoTbNum, _videoTbDen);
+                vf.ptsUs = TsToUs(frame->best_effort_timestamp, _videoTbNum, _videoTbDen);
                 vf.width  = _videoWidth;
                 vf.height = _videoHeight;
                 vf.bgra   = bgraBuf; // copy
@@ -217,22 +217,22 @@ void MediaDecoder::DecodeLoop() {
         } else if (pkt->stream_index == _audioStream && _audioCtx && _swrCtx) {
             avcodec_send_packet(_audioCtx, pkt);
             while (_running && avcodec_receive_frame(_audioCtx, frame) == 0) {
-                int out_samples = av_rescale_rnd(
+                int outSamples = av_rescale_rnd(
                     swr_get_delay(_swrCtx, _audioSampleRate) + frame->nb_samples,
                     _audioSampleRate, _audioSampleRate, AV_ROUND_UP);
 
                 std::vector<uint8_t> pcm(
-                    static_cast<size_t>(out_samples) * _audioChannels * sizeof(int16_t));
+                    static_cast<size_t>(outSamples) * _audioChannels * sizeof(int16_t));
 
                 uint8_t* outPtr = pcm.data();
-                int converted = swr_convert(_swrCtx, &outPtr, out_samples,
+                int converted = swr_convert(_swrCtx, &outPtr, outSamples,
                     const_cast<const uint8_t**>(frame->data), frame->nb_samples);
 
                 if (converted > 0) {
                     pcm.resize(static_cast<size_t>(converted) * _audioChannels * sizeof(int16_t));
                     AudioChunk chunk;
-                    chunk.pts_us  = TsToUs(frame->pts, _audioTbNum, _audioTbDen);
-                    chunk.pcm_s16 = std::move(pcm);
+                    chunk.ptsUs  = TsToUs(frame->pts, _audioTbNum, _audioTbDen);
+                    chunk.pcmS16 = std::move(pcm);
                     _audioRenderer->QueueChunk(std::move(chunk));
                 }
                 av_frame_unref(frame);

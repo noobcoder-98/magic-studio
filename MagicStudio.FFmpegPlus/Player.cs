@@ -35,11 +35,11 @@ public sealed partial class Player : IDisposable
                             out int width,
                             out int height)
     {
-        FrameData frame = default!;
+        FrameData? frame = null;
         bool got = _impl.TryGetFrame(audioPtsUs, out frame);
-        bgraData = got ? frame?.BgraData : null;
-        width    = got ? frame?.Width  ?? 0 : 0;
-        height   = got ? frame?.Height ?? 0 : 0;
+        bgraData = frame?.BgraData;
+        width    = frame?.Width  ?? 0;
+        height   = frame?.Height ?? 0;
         return got;
     }
 

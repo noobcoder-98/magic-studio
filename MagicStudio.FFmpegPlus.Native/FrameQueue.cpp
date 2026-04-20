@@ -24,7 +24,7 @@ std::optional<VideoFrame> FrameQueue::Pop() {
 std::optional<int64_t> FrameQueue::PeekFrontPts() const {
     std::lock_guard<std::mutex> lock(_mutex);
     if (_queue.empty()) return std::nullopt;
-    return _queue.front().pts_us;
+    return _queue.front().ptsUs;
 }
 
 void FrameQueue::Flush() {

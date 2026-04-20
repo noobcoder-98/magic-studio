@@ -9,7 +9,7 @@
 namespace MagicStudio::Native {
 
 struct VideoFrame {
-    int64_t pts_us = 0;
+    int64_t ptsUs = 0;
     int width = 0, height = 0;
     std::vector<uint8_t> bgra;
 };

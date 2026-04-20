@@ -35,7 +35,7 @@ public:
     // Called from the render thread each frame.
     // Pops all video frames that are due (pts <= audio_pts) and returns the
     // most recent one. Returns false only when no frame has ever been decoded.
-    bool TryGetFrameForTime(int64_t audio_pts_us,
+    bool TryGetFrameForTime(int64_t audioPtsUs,
                             std::vector<uint8_t>& outBgra,
                             int& outWidth, int& outHeight);
 

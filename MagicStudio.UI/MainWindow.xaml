@@ -26,6 +26,6 @@
         </StackPanel>
 
         <!-- Player -->
-        <local:MediaPlayerControl x:Name="_player" Grid.Row="1" />
+        <local:MediaPlayerControl x:Name="MediaPlayer" Grid.Row="1" />
     </Grid>
 </Window>

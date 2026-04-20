@@ -11,8 +11,8 @@
 namespace MagicStudio::Native {
 
 struct AudioChunk {
-    int64_t pts_us = 0;
-    std::vector<uint8_t> pcm_s16; // interleaved signed-16 PCM
+    int64_t ptsUs = 0;
+    std::vector<uint8_t> pcmS16; // interleaved signed-16 PCM
 };
 
 class AudioVoiceCallback : public IXAudio2VoiceCallback {
