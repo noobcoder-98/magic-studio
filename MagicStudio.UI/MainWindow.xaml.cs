@@ -32,6 +32,8 @@ public sealed partial class MainWindow : Window
 
         _player.Pause();
         if (_player.Open(file.Path))
+        {
             _player.Play();
+        }
     }
 }

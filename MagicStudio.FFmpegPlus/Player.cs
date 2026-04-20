@@ -8,7 +8,7 @@ namespace MagicStudio.FFmpegPlus;
 /// Instantiate, call Open() then Play(), then call GetAudioPositionUs() +
 /// TryGetFrame() from your Win2D Draw handler.
 /// </summary>
-public sealed class Player : IDisposable
+public sealed partial class Player : IDisposable
 {
     private readonly MediaPlayer _impl = new();
     private bool _disposed;
