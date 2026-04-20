@@ -152,7 +152,7 @@
       <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\include;$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\bin;$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\source\MagicStudio\MagicStudio.FFmpegPlus.Native\native\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

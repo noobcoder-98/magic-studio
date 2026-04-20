@@ -114,7 +114,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>D:\source\MagicStudio\MagicStudio.FFmpegPlus.Native\native\include;D:\source\MagicStudio\MagicStudio.FFmpegPlus.Native\native\lib;D:\source\MagicStudio\MagicStudio.FFmpegPlus.Native\native\bin;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\native\include;$(MSBuildProjectDirectory)\native\lib;$(MSBuildProjectDirectory)\native\bin;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>
