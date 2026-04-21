@@ -149,7 +149,7 @@
   <!-- Native project header path needed by pch.h and MediaPlayerWrapper -->
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\include;$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\bin;$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\include;$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\dlls;$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>

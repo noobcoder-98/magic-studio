@@ -19,7 +19,7 @@
 
   <!-- Copy FFmpeg native DLLs to output so the Wrapper C++/CLR DLL can load them -->
   <ItemGroup>
-    <Content Include="..\MagicStudio.FFmpegPlus.Native\native\bin\*.dll">
+    <Content Include="..\MagicStudio.FFmpegPlus.Native\native\dlls\*.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>%(Filename)%(Extension)</Link>
     </Content>
