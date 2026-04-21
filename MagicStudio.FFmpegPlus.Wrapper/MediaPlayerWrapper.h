@@ -30,6 +30,7 @@ public:
     void   Play();
     void   Pause();
     void   Stop();
+    void   Seek(Int64 positionUs);
 
     /// <summary>Current audio clock position (master clock) in microseconds.</summary>
     Int64  GetAudioPositionUs();

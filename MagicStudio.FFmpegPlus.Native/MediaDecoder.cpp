@@ -159,6 +159,53 @@ void MediaDecoder::Stop() {
     _frameQueue    = std::make_unique<FrameQueue>(16);
 }
 
+void MediaDecoder::Seek(int64_t positionUs) {
+    if (!_fmtCtx) return;
+
+    bool wasRunning = _running.load();
+
+    if (wasRunning) {
+        _running = false;
+        _paused  = false;
+        _videoPktQueue->Shutdown();
+        _audioPktQueue->Shutdown();
+        _frameQueue->Shutdown();
+        if (_audioRenderer) _audioRenderer->FlushQueue();
+
+        if (_demuxThread.joinable())       _demuxThread.join();
+        if (_videoDecodeThread.joinable()) _videoDecodeThread.join();
+        if (_audioDecodeThread.joinable()) _audioDecodeThread.join();
+
+        _videoPktQueue = std::make_unique<PacketQueue>(64);
+        _audioPktQueue = std::make_unique<PacketQueue>(128);
+        _frameQueue    = std::make_unique<FrameQueue>(16);
+    }
+
+    int64_t targetTs = av_rescale(positionUs, AV_TIME_BASE, 1'000'000LL);
+    avformat_seek_file(_fmtCtx, -1, INT64_MIN, targetTs, targetTs, 0);
+
+    if (_videoCtx) avcodec_flush_buffers(_videoCtx);
+    if (_audioCtx) avcodec_flush_buffers(_audioCtx);
+    if (_swrCtx)   swr_init(_swrCtx);
+
+    if (_audioRenderer && _audioRenderer->IsInitialized())
+        _audioRenderer->ResetClock(positionUs);
+
+    {
+        std::lock_guard<std::mutex> lock(_frameMutex);
+        _curBgra.clear();
+        _curWidth = _curHeight = 0;
+    }
+
+    if (wasRunning) {
+        _running = true;
+        _paused  = false;
+        _demuxThread       = std::thread(&MediaDecoder::DemuxLoop,       this);
+        _videoDecodeThread = std::thread(&MediaDecoder::VideoDecodeLoop, this);
+        _audioDecodeThread = std::thread(&MediaDecoder::AudioDecodeLoop, this);
+    }
+}
+
 void MediaDecoder::Close() {
     Stop();
     if (_audioRenderer) _audioRenderer->Shutdown();

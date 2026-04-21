@@ -22,6 +22,7 @@ public sealed partial class Player : IDisposable
     public void Play()  => _impl.Play();
     public void Pause() => _impl.Pause();
     public void Stop()  => _impl.Stop();
+    public void Seek(double seconds) => _impl.Seek((long)(seconds * 1_000_000));
 
     /// <summary>Audio clock position in microseconds (master clock for A/V sync).</summary>
     public long GetAudioPositionUs() => _impl.GetAudioPositionUs();

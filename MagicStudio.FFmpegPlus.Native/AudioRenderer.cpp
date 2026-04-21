@@ -62,6 +62,7 @@ void AudioRenderer::Shutdown() {
     if (_xaudio2)      { _xaudio2->Release();            _xaudio2      = nullptr; }
 
     _initialized = false;
+    _clockSet.store(false, std::memory_order_relaxed);
 }
 
 void AudioRenderer::QueueChunk(AudioChunk&& chunk) {
@@ -76,6 +77,15 @@ void AudioRenderer::FlushQueue() {
         while (!_chunkQueue.empty()) _chunkQueue.pop();
     }
     if (_sourceVoice) _sourceVoice->FlushSourceBuffers();
+}
+
+void AudioRenderer::ResetClock(int64_t seekPtsUs) {
+    FlushQueue();
+    XAUDIO2_VOICE_STATE state{};
+    if (_sourceVoice) _sourceVoice->GetState(&state);
+    _baseSamplesPlayed.store(state.SamplesPlayed, std::memory_order_relaxed);
+    _basePtsUs.store(seekPtsUs, std::memory_order_relaxed);
+    _clockSet.store(true, std::memory_order_relaxed);
 }
 
 int64_t AudioRenderer::GetPositionUs() const {
@@ -112,13 +122,13 @@ void AudioRenderer::RenderThread() {
         }
         if (!_running) break;
 
-        // Capture baseline PTS + sample count on the very first chunk.
-        std::call_once(_clockInit, [&] {
+        if (!_clockSet.load(std::memory_order_relaxed)) {
             XAUDIO2_VOICE_STATE state{};
             _sourceVoice->GetState(&state);
             _baseSamplesPlayed.store(state.SamplesPlayed, std::memory_order_relaxed);
             _basePtsUs.store(chunk.ptsUs, std::memory_order_relaxed);
-        });
+            _clockSet.store(true, std::memory_order_relaxed);
+        }
 
         auto* ctx    = new BufferContext{std::move(chunk.pcmS16)};
         XAUDIO2_BUFFER buf{};

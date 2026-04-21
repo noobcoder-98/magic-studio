@@ -41,6 +41,8 @@
                     Margin="8,0"
                     Minimum="0" Maximum="1" Value="0"
                     VerticalAlignment="Center"
+                    PointerPressed="ProgressSlider_PointerPressed"
+                    PointerCaptureLost="ProgressSlider_PointerCaptureLost"
                     ValueChanged="ProgressSlider_ValueChanged" />
 
             <TextBlock x:Name="TimeText"

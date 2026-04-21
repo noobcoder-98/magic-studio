@@ -28,6 +28,7 @@ public:
     void Play();
     void Pause();
     void Stop();
+    void Seek(int64_t positionUs);
     void Close();
 
     // Returns the current audio clock position (master clock for A/V sync).

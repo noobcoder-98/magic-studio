@@ -39,6 +39,10 @@ public:
     void QueueChunk(AudioChunk&& chunk);
     void FlushQueue();
 
+    // Re-anchors the master clock to seekPtsUs. Call after flushing queues and
+    // seeking the container so GetPositionUs() reports the new position immediately.
+    void ResetClock(int64_t seekPtsUs);
+
     // Master clock: stream position in microseconds.
     int64_t GetPositionUs() const;
 
@@ -63,10 +67,10 @@ private:
     std::atomic<bool> _running{false};
     bool _initialized = false;
 
-    // Clock baseline: set once on the first submitted chunk.
-    std::once_flag _clockInit;
+    // Clock baseline: set on first submitted chunk or on ResetClock().
+    std::atomic<bool>    _clockSet{false};
     std::atomic<int64_t> _basePtsUs{0};
-    std::atomic<UINT64> _baseSamplesPlayed{0};
+    std::atomic<UINT64>  _baseSamplesPlayed{0};
 };
 
 } // namespace MagicStudio::Native

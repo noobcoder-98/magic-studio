@@ -31,6 +31,7 @@ bool MediaPlayer::Open(String^ path) {
 void MediaPlayer::Play()  { _decoder->Play();  }
 void MediaPlayer::Pause() { _decoder->Pause(); }
 void MediaPlayer::Stop()  { _decoder->Stop();  }
+void MediaPlayer::Seek(Int64 positionUs) { _decoder->Seek(static_cast<int64_t>(positionUs)); }
 
 Int64 MediaPlayer::GetAudioPositionUs() {
     return static_cast<Int64>(_decoder->GetAudioPositionUs());

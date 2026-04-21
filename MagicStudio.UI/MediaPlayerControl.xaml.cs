@@ -15,11 +15,12 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
     private Player?       _player;
     private CanvasBitmap? _frameBitmap;
     private bool          _playing;
-    private bool          _seekPending;
     private bool          _disposed;
 
     // Prevents slider ValueChanged from re-triggering during programmatic updates.
-    private bool _suppressSlider;
+    private bool   _suppressSlider;
+    private bool   _sliderDragging;
+    private double _seekTargetSeconds;
 
     public MediaPlayerControl()
     {
@@ -121,12 +122,34 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
         else          Play();
     }
 
+    private void ProgressSlider_PointerPressed(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        _sliderDragging = true;
+    }
+
+    private void ProgressSlider_PointerCaptureLost(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (!_sliderDragging) return;
+        _sliderDragging = false;
+        PerformSeek(_seekTargetSeconds);
+    }
+
     private void ProgressSlider_ValueChanged(object sender,
         Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         if (_suppressSlider || _player is null) return;
-        // Seeking is not implemented in this initial version; extend MediaDecoder
-        // with avformat_seek_file() to support it.
+        _seekTargetSeconds = e.NewValue;
+        if (!_sliderDragging)
+            PerformSeek(_seekTargetSeconds); // keyboard navigation: seek immediately
+    }
+
+    private void PerformSeek(double seconds)
+    {
+        if (_player is null) return;
+        _player.Seek(seconds);
+        _playing = true;
+        PlayPauseButton.Content = "\uE769"; // Pause glyph
+        VideoCanvas.Invalidate();
     }
 
     // -------------------------------------------------------------------------
