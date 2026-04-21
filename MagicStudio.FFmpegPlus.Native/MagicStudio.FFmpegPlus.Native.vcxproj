@@ -143,11 +143,13 @@
   <ItemGroup>
     <ClInclude Include="pch.h" />
     <ClInclude Include="FrameQueue.h" />
+    <ClInclude Include="PacketQueue.h" />
     <ClInclude Include="AudioRenderer.h" />
     <ClInclude Include="MediaDecoder.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="FrameQueue.cpp" />
+    <ClCompile Include="PacketQueue.cpp" />
     <ClCompile Include="AudioRenderer.cpp" />
     <ClCompile Include="MediaDecoder.cpp" />
     <ClCompile Include="pch.cpp">
