@@ -73,6 +73,16 @@ bool MediaDecoder::Open(const char* path) {
             // HW manages its own parallelism; disable FFmpeg frame threading.
             _videoCtx->thread_count = 1;
             _videoCtx->thread_type  = 0;
+
+            // Initialize GPU converter for D3D11VA frames
+            _gpuConverter = std::make_unique<GpuFrameConverter>();
+
+            // Extract D3D11 device from hwDeviceCtx
+            AVHWDeviceContext* hwDevCtx = reinterpret_cast<AVHWDeviceContext*>(_hwDeviceCtx->data);
+            AVD3D11VADeviceContext* d3d11Ctx = static_cast<AVD3D11VADeviceContext*>(hwDevCtx->hwctx);
+            if (d3d11Ctx && d3d11Ctx->device) {
+                _gpuConverter->Initialize(d3d11Ctx->device);
+            }
         } else {
             // HW unavailable — fall back to multi-threaded software decode.
             _videoCtx->thread_count = 0; // auto-detect core count
@@ -86,7 +96,7 @@ bool MediaDecoder::Open(const char* path) {
         _videoTbNum  = vs->time_base.num;
         _videoTbDen  = vs->time_base.den;
         // _swsCtx is created lazily in VideoDecodeLoop once the actual
-        // decoded pixel format is known (needed for HW frames).
+        // decoded pixel format is known (needed for software fallback).
     }
 
     // --- Audio decoder ---
@@ -315,13 +325,14 @@ void MediaDecoder::DemuxLoop() {
 
 // ---------------------------------------------------------------------------
 // Thread 2: video decode
-// handles D3D11VA hardware frames via av_hwframe_transfer_data.
+// Handles D3D11VA hardware frames with GPU-based NV12→BGRA conversion.
+// Frames are kept on GPU whenever possible, avoiding CPU copies.
 // ---------------------------------------------------------------------------
 void MediaDecoder::VideoDecodeLoop() {
     if (!_videoCtx) return;
 
     AVFrame* frame   = av_frame_alloc();
-    AVFrame* swFrame = av_frame_alloc(); // used for HW→SW transfer
+    AVFrame* swFrame = av_frame_alloc(); // fallback for software decoding
 
     const int bgraStride = _videoWidth * 4;
     std::vector<uint8_t> bgraBuf(_videoWidth * _videoHeight * 4);
@@ -334,9 +345,37 @@ void MediaDecoder::VideoDecodeLoop() {
             if (ret == AVERROR(EAGAIN)) return true;  // need more packets
             if (ret == AVERROR_EOF || ret < 0) return false;
 
-            // Solution 1: if the frame lives on the GPU, copy it to CPU first.
+            VideoFrame vf;
+            vf.ptsUs  = TsToUs(frame->best_effort_timestamp, _videoTbNum, _videoTbDen);
+            vf.width  = _videoWidth;
+            vf.height = _videoHeight;
+
+            // --- GPU Path: D3D11 NV12 surfaces ---
+            if (frame->format == AV_PIX_FMT_D3D11 && _gpuConverter) {
+                // For D3D11VA hwframes, the actual texture is in frame->data[0]
+                // as a pointer to ID3D11Texture2D (cast as void*)
+                ID3D11Texture2D* nv12Surface = reinterpret_cast<ID3D11Texture2D*>(frame->data[0]);
+                if (nv12Surface) {
+                    // Convert NV12→BGRA on GPU using pixel shader
+                    ID3D11Texture2D* bgra = _gpuConverter->ConvertNv12ToBgra(
+                        nv12Surface, _videoWidth, _videoHeight);
+
+                    if (bgra) {
+                        // Store GPU texture reference
+                        vf.gpuBgraTexture = bgra;
+                        bgra->AddRef();  // Increment refcount so it survives until UI renders
+                        _frameQueue->Push(std::move(vf));
+                        av_frame_unref(frame);
+                        continue;
+                    }
+                }
+            }
+
+            // --- Fallback Path: Software decode or CPU readback ---
+            // If GPU conversion failed or not available, use CPU path
             AVFrame* srcFrame = frame;
             if (frame->format == AV_PIX_FMT_D3D11) {
+                // Fallback: transfer HW frame to software format
                 av_frame_unref(swFrame);
                 if (av_hwframe_transfer_data(swFrame, frame, 0) < 0) {
                     av_frame_unref(frame);
@@ -345,7 +384,7 @@ void MediaDecoder::VideoDecodeLoop() {
                 srcFrame = swFrame;
             }
 
-            // Lazily create / recreate SWS context if pixel format changed.
+            // Lazily create / recreate SWS context if pixel format changed
             UpdateSwsContext(srcFrame->format);
 
             if (_swsCtx) {
@@ -354,11 +393,7 @@ void MediaDecoder::VideoDecodeLoop() {
                 sws_scale(_swsCtx, srcFrame->data, srcFrame->linesize,
                           0, _videoHeight, dst, stride);
 
-                VideoFrame vf;
-                vf.ptsUs  = TsToUs(frame->best_effort_timestamp, _videoTbNum, _videoTbDen);
-                vf.width  = _videoWidth;
-                vf.height = _videoHeight;
-                vf.bgra   = bgraBuf;
+                vf.bgra = bgraBuf;
                 _frameQueue->Push(std::move(vf));
             }
             av_frame_unref(frame);

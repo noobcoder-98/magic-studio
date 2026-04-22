@@ -141,6 +141,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="GpuFrameConverter.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="FrameQueue.h" />
     <ClInclude Include="PacketQueue.h" />
@@ -149,6 +150,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="FrameQueue.cpp" />
+    <ClCompile Include="GpuFrameConverter.cpp" />
     <ClCompile Include="PacketQueue.cpp" />
     <ClCompile Include="AudioRenderer.cpp" />
     <ClCompile Include="MediaDecoder.cpp" />

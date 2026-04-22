@@ -2,6 +2,7 @@
 #include "AudioRenderer.h"
 #include "FrameQueue.h"
 #include "PacketQueue.h"
+#include "GpuFrameConverter.h"
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -75,10 +76,11 @@ private:
 
     int _swsSrcFmt = -1; // AV_PIX_FMT_NONE — tracks current sws source format
 
-    std::unique_ptr<FrameQueue>    _frameQueue;
-    std::unique_ptr<PacketQueue>   _videoPktQueue; // Solution 2
-    std::unique_ptr<PacketQueue>   _audioPktQueue; // Solution 2
-    std::unique_ptr<AudioRenderer> _audioRenderer;
+    std::unique_ptr<FrameQueue>        _frameQueue;
+    std::unique_ptr<PacketQueue>       _videoPktQueue;
+    std::unique_ptr<PacketQueue>       _audioPktQueue;
+    std::unique_ptr<AudioRenderer>     _audioRenderer;
+    std::unique_ptr<GpuFrameConverter> _gpuConverter;  // GPU-based NV12→BGRA conversion
 
     // demux + per-stream decode threads
     std::thread       _demuxThread;
