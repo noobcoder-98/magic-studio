@@ -141,20 +141,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="MagicFFmpegPlayer.h" />
     <ClInclude Include="pch.h" />
-    <ClInclude Include="FrameQueue.h" />
-    <ClInclude Include="PacketQueue.h" />
-    <ClInclude Include="AudioRenderer.h" />
-    <ClInclude Include="MediaDecoder.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="FrameQueue.cpp" />
-    <ClCompile Include="MagicFFmpegPlayer\ffplay.c" />
-    <ClCompile Include="MagicFFmpegPlayer\MagicFFmpegPlayer.cpp" />
-    <ClCompile Include="MagicFFmpegPlayer\MagicFFmpegPlayer_Simplified.cpp" />
-    <ClCompile Include="PacketQueue.cpp" />
-    <ClCompile Include="AudioRenderer.cpp" />
-    <ClCompile Include="MediaDecoder.cpp" />
+    <ClCompile Include="MagicFFmpegPlayer.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
