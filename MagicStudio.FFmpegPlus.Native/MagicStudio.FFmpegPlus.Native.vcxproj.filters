@@ -9,38 +9,56 @@
       <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
+    <Filter Include="Source Files\MagicPlayer">
+      <UniqueIdentifier>{3b68a49e-b0d2-4e54-b52a-cc450b612d6a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\MagicFFmpegPlayer">
+      <UniqueIdentifier>{c5dda03a-30c6-4c90-976f-3c8da66f28ff}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\MagicPlayer">
+      <UniqueIdentifier>{fd0ba2c3-2fd2-4d3d-b74d-e7ea3c3b9654}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="FrameQueue.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="AudioRenderer.h">
-      <Filter>Header Files</Filter>
+      <Filter>Header Files\MagicPlayer</Filter>
+    </ClInclude>
+    <ClInclude Include="FrameQueue.h">
+      <Filter>Header Files\MagicPlayer</Filter>
     </ClInclude>
     <ClInclude Include="MediaDecoder.h">
-      <Filter>Header Files</Filter>
+      <Filter>Header Files\MagicPlayer</Filter>
     </ClInclude>
     <ClInclude Include="PacketQueue.h">
-      <Filter>Header Files</Filter>
+      <Filter>Header Files\MagicPlayer</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="FrameQueue.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="AudioRenderer.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Source Files\MagicPlayer</Filter>
+    </ClCompile>
+    <ClCompile Include="FrameQueue.cpp">
+      <Filter>Source Files\MagicPlayer</Filter>
     </ClCompile>
     <ClCompile Include="MediaDecoder.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Source Files\MagicPlayer</Filter>
     </ClCompile>
     <ClCompile Include="PacketQueue.cpp">
+      <Filter>Source Files\MagicPlayer</Filter>
+    </ClCompile>
+    <ClCompile Include="MagicFFmpegPlayer\ffplay.c">
+      <Filter>Source Files\MagicFFmpegPlayer</Filter>
+    </ClCompile>
+    <ClCompile Include="MagicFFmpegPlayer\MagicFFmpegPlayer.cpp">
+      <Filter>Source Files\MagicFFmpegPlayer</Filter>
+    </ClCompile>
+    <ClCompile Include="MagicFFmpegPlayer\MagicFFmpegPlayer_Simplified.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

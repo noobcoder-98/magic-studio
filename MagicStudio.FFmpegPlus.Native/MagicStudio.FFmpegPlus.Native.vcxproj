@@ -149,6 +149,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="FrameQueue.cpp" />
+    <ClCompile Include="MagicFFmpegPlayer\ffplay.c" />
+    <ClCompile Include="MagicFFmpegPlayer\MagicFFmpegPlayer.cpp" />
+    <ClCompile Include="MagicFFmpegPlayer\MagicFFmpegPlayer_Simplified.cpp" />
     <ClCompile Include="PacketQueue.cpp" />
     <ClCompile Include="AudioRenderer.cpp" />
     <ClCompile Include="MediaDecoder.cpp" />
