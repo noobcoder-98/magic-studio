@@ -63,6 +63,7 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
         _player?.Pause();
         _playing = false;
         PlayPauseButton.Content = "\uE768"; // Play glyph
+        VideoCanvas.Invalidate();
     }
 
     // -------------------------------------------------------------------------
@@ -76,7 +77,7 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
 
     private void VideoCanvas_Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
-        if (_player is null || !_playing)
+        if (_player is null)
             return;
 
         long pts = _player.GetAudioPositionUs();

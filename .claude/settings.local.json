@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(git -C \"D:\\\\source\\\\magic-studio\" log --oneline)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(grep -E \"\\\\.\\(cpp|h\\)$\")",
+      "Bash(python3 *)"
     ]
   }
 }
