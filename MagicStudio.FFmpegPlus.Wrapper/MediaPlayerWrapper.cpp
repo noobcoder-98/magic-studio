@@ -17,7 +17,7 @@ static inline ::MagicPlayerHandle* H(void* p) {
 }
 
 MediaPlayer::MediaPlayer()
-    : _handle(nullptr), _width(0), _height(0)
+    : _handle(nullptr), _width(0), _height(0), _lastVersion(0), _bgraBuffer(nullptr)
 {}
 
 MediaPlayer::~MediaPlayer() {
@@ -36,6 +36,9 @@ bool MediaPlayer::Open(String^ path) {
         magic_player_close(H(_handle));
         _handle = nullptr;
     }
+    _lastVersion = 0;
+    _bgraBuffer  = nullptr;
+
     std::string nativePath = marshal_as<std::string>(path);
     _handle = magic_player_open(nativePath.c_str());
     if (!_handle) return false;
@@ -82,6 +85,12 @@ bool MediaPlayer::TryGetFrame(Int64 /*audioPtsUs*/, [Out] FrameData^% frame) {
     frame = nullptr;
     if (!_handle) return false;
 
+    // Cheap check: same frame as last time? Avoid the GPU readback + managed
+    // allocation entirely. The host should keep using its cached bitmap.
+    UInt64 version = magic_player_current_frame_version(H(_handle));
+    if (version == 0 || version == _lastVersion)
+        return false;
+
     // Re-query dimensions in case the stream wasn't ready when Open() returned.
     if (_width <= 0 || _height <= 0) {
         int w = 0, h = 0;
@@ -92,10 +101,12 @@ bool MediaPlayer::TryGetFrame(Int64 /*audioPtsUs*/, [Out] FrameData^% frame) {
     }
 
     const int needed = _width * _height * 4;
-    array<Byte>^ managed = gcnew array<Byte>(needed);
+    if (_bgraBuffer == nullptr || _bgraBuffer->Length != needed)
+        _bgraBuffer = gcnew array<Byte>(needed);
+
     int outW = 0, outH = 0;
     {
-        pin_ptr<Byte> pin = &managed[0];
+        pin_ptr<Byte> pin = &_bgraBuffer[0];
         if (!magic_player_copy_current_bgra(H(_handle),
                                             pin, needed,
                                             &outW, &outH))
@@ -105,15 +116,18 @@ bool MediaPlayer::TryGetFrame(Int64 /*audioPtsUs*/, [Out] FrameData^% frame) {
     // The frame size could change mid-stream (e.g. resolution switch); if so,
     // grow the cached dims and ask the next Draw cycle to allocate again.
     if (outW != _width || outH != _height) {
-        _width  = outW;
-        _height = outH;
+        _width      = outW;
+        _height     = outH;
+        _bgraBuffer = nullptr;
         return false;
     }
+
+    _lastVersion = version;
 
     auto fd    = gcnew FrameData();
     fd->Width  = outW;
     fd->Height = outH;
-    fd->BgraData = managed;
+    fd->BgraData = _bgraBuffer;
     frame = fd;
     return true;
 }

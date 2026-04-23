@@ -38,10 +38,11 @@ public:
     Int64  GetAudioPositionUs();
 
     /// <summary>
-    /// Returns the most recently presented video frame. The audioPtsUs argument
-    /// is accepted for API symmetry but currently ignored: the native player
-    /// drives its own A/V sync timeline and exposes the frame whose deadline
-    /// has just passed.
+    /// Returns the most recently presented video frame *only when it differs
+    /// from the one returned by the previous call*. When the displayed frame
+    /// hasn't advanced, returns false and frame is null -- callers should
+    /// keep using their cached bitmap. The audioPtsUs argument is accepted
+    /// for API symmetry but currently ignored.
     /// </summary>
     bool TryGetFrame(Int64 audioPtsUs, [Out] FrameData^% frame);
 
@@ -57,6 +58,13 @@ private:
     // handle on every frame.
     int    _width;
     int    _height;
+    // Last frame version handed back via TryGetFrame -- comparing against the
+    // current native version lets us skip the GPU readback + managed alloc
+    // when nothing has changed since the previous Draw cycle.
+    UInt64 _lastVersion;
+    // Reused readback buffer (sized to _width * _height * 4). Avoids an
+    // 8 MB+ managed allocation per frame at 1080p.
+    array<Byte>^ _bgraBuffer;
 };
 
 }}} // namespace MagicStudio::FFmpegPlus::Wrapper

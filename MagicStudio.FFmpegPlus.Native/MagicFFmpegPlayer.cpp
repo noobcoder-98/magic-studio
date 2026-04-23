@@ -137,6 +137,11 @@ struct GpuPipeline {
 
 static GpuPipeline g_gpu;
 
+// Monotonic id stamped on each freshly-produced BGRA frame. The host (UI)
+// uses it to skip the GPU->CPU->GPU bounce when the displayed frame hasn't
+// changed since the previous Draw cycle.
+static std::atomic<uint64_t> g_frame_version_seq{0};
+
 static void gpu_lock_cb(void* /*ctx*/)   { g_gpu.ffmpegLock.lock();   }
 static void gpu_unlock_cb(void* /*ctx*/) { g_gpu.ffmpegLock.unlock(); }
 
@@ -307,6 +312,9 @@ typedef struct Frame {
     int              format;
     AVRational       sar;
     ID3D11Texture2D *tex;     // BGRA, AddRef'd; released by frame_queue_unref_item
+    uint64_t         version; // Monotonic, set when tex is produced. Lets the
+                              // host skip readback/upload when the displayed
+                              // frame hasn't changed since its last query.
 } Frame;
 
 typedef struct FrameQueue {
@@ -940,6 +948,7 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
         if (gpu_ensure_processor(vp->width, vp->height) == 0)
             vp->tex = gpu_convert_nv12_to_bgra(nv12, slice);
     }
+    vp->version = vp->tex ? ++g_frame_version_seq : 0;
 
     av_frame_move_ref(vp->frame, src_frame);
     frame_queue_push(&is->pictq);
@@ -1719,6 +1728,18 @@ int magic_player_acquire_current_texture(MagicPlayerHandle *h, ID3D11Texture2D *
     }
     SDL_UnlockMutex(h->is->pictq.mutex);
     return *out ? 1 : 0;
+}
+
+uint64_t magic_player_current_frame_version(MagicPlayerHandle *h) {
+    if (!h || !h->is) return 0;
+    uint64_t v = 0;
+    SDL_LockMutex(h->is->pictq.mutex);
+    if (h->is->pictq.rindex_shown) {
+        Frame *fp = &h->is->pictq.queue[h->is->pictq.rindex];
+        v = fp->version;
+    }
+    SDL_UnlockMutex(h->is->pictq.mutex);
+    return v;
 }
 
 int magic_player_copy_current_bgra(MagicPlayerHandle *h,

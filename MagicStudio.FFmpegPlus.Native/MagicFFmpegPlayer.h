@@ -34,6 +34,11 @@ int     magic_player_video_size       (MagicPlayerHandle* h, int* w, int* h_out)
 // *out is AddRef'd on success and the function returns 1; caller releases.
 int magic_player_acquire_current_texture(MagicPlayerHandle* h, ID3D11Texture2D** out);
 
+// Monotonic id of the currently-shown frame (0 if none yet). Cheap to call;
+// hosts can compare against the last value they observed and skip a fresh
+// readback / texture upload when nothing changed.
+uint64_t magic_player_current_frame_version(MagicPlayerHandle* h);
+
 // Copy the current BGRA frame into a tightly-packed (no row padding) buffer
 // supplied by the caller. dst must be at least width*height*4 bytes.
 // Returns 1 on success; *out_w / *out_h are filled with the frame dimensions.
