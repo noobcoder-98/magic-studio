@@ -15,7 +15,8 @@
       "PowerShell(Stop-Process *)",
       "PowerShell(Get-WinEvent *)",
       "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.UI\\\\MagicStudio.UI.csproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 20)",
-      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.UI\\\\MagicStudio.UI.csproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 10)"
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.UI\\\\MagicStudio.UI.csproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 10)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.UI\\\\MagicStudio.UI.csproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 15)"
     ]
   }
 }

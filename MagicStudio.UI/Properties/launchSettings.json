@@ -1,7 +1,8 @@
 {
   "profiles": {
     "MagicStudio.UI (Package)": {
-      "commandName": "MsixPackage"
+      "commandName": "MsixPackage",
+      "nativeDebugging": true
     },
     "MagicStudio.UI (Unpackaged)": {
       "commandName": "Project"

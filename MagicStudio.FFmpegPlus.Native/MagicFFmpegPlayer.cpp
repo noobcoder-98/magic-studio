@@ -405,6 +405,14 @@ typedef struct VideoState {
     char                *filename;
     SDL_cond            *continue_read_thread;
 
+    // Open() handshake: read_thread sets prepared (=1 ok / =-1 err) once
+    // avformat_open_input + find_stream_info + stream_component_open have
+    // run, and signals prep_cond. magic_player_open blocks on this so the
+    // caller sees a populated ic (duration, video size) on return.
+    SDL_mutex           *prep_mutex;
+    SDL_cond            *prep_cond;
+    int                  prepared;
+
     SDL_AudioDeviceID    audio_dev;
     int64_t              audio_callback_time;
 } VideoState;
@@ -1450,6 +1458,13 @@ static int read_thread(void *arg) {
 
     is->realtime = is_realtime(ic);
 
+    // Hand-off to magic_player_open: ic + duration + video size + audio
+    // device are all populated now, so the synchronous open call can return.
+    SDL_LockMutex(is->prep_mutex);
+    is->prepared = 1;
+    SDL_CondSignal(is->prep_cond);
+    SDL_UnlockMutex(is->prep_mutex);
+
     for (;;) {
         if (is->abort_request) break;
 
@@ -1528,6 +1543,13 @@ fail:
     if (ic && !is->ic) avformat_close_input(&ic);
     av_packet_free(&pkt);
     if (wait_mutex) SDL_DestroyMutex(wait_mutex);
+
+    // If we exited before the success signal above, unblock magic_player_open
+    // with an error so it doesn't hang waiting for a file that never opened.
+    SDL_LockMutex(is->prep_mutex);
+    if (is->prepared == 0) is->prepared = -1;
+    SDL_CondSignal(is->prep_cond);
+    SDL_UnlockMutex(is->prep_mutex);
     return 0;
 }
 
@@ -1559,6 +1581,8 @@ static void stream_close(VideoState *is) {
     frame_queue_destroy(&is->pictq);
     frame_queue_destroy(&is->sampq);
     SDL_DestroyCond(is->continue_read_thread);
+    if (is->prep_cond)  SDL_DestroyCond(is->prep_cond);
+    if (is->prep_mutex) SDL_DestroyMutex(is->prep_mutex);
     av_free(is->filename);
     av_free(is);
 }
@@ -1578,6 +1602,8 @@ static VideoState *stream_open(const char *filename) {
         packet_queue_init(&is->audioq) < 0) goto fail;
 
     if (!(is->continue_read_thread = SDL_CreateCond())) goto fail;
+    if (!(is->prep_mutex           = SDL_CreateMutex())) goto fail;
+    if (!(is->prep_cond            = SDL_CreateCond()))  goto fail;
 
     init_clock(&is->vidclk, &is->videoq.serial);
     init_clock(&is->audclk, &is->audioq.serial);
@@ -1618,6 +1644,21 @@ MagicPlayerHandle* magic_player_open(const char* path) {
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_TIMER) < 0) return nullptr;
     VideoState *is = stream_open(path);
     if (!is) return nullptr;
+
+    // Block until read_thread has actually opened the file -- otherwise the
+    // caller will see Duration == 0 / VideoSize == 0 and trip up sliders /
+    // bitmap allocation.
+    SDL_LockMutex(is->prep_mutex);
+    while (is->prepared == 0)
+        SDL_CondWait(is->prep_cond, is->prep_mutex);
+    int prepared = is->prepared;
+    SDL_UnlockMutex(is->prep_mutex);
+
+    if (prepared < 0) {
+        stream_close(is);
+        return nullptr;
+    }
+
     auto *h = new MagicPlayerHandle();
     h->is = is;
     return h;
