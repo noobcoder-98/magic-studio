@@ -2,8 +2,9 @@
 using namespace System;
 using namespace System::Runtime::InteropServices;
 
-// Forward-declare the native type so the managed header stays include-free.
-namespace MagicStudio { namespace Native { class MediaDecoder; } }
+// Forward-declare the opaque native handle so this header stays free of
+// d3d11/dxgi includes.
+struct MagicPlayerHandle;
 
 namespace MagicStudio {
 namespace FFmpegPlus {
@@ -17,8 +18,9 @@ public:
 };
 
 /// <summary>
-/// Managed wrapper around the native MediaDecoder.
-/// Open() → Play() to start; call TryGetFrame() from your render loop.
+/// Managed wrapper around the native MagicFFmpegPlayer C API.
+/// Open() then Play() to start; call TryGetFrame() from your render loop with
+/// the master clock returned by GetAudioPositionUs().
 /// </summary>
 public ref class MediaPlayer sealed {
 public:
@@ -32,12 +34,14 @@ public:
     void   Stop();
     void   Seek(Int64 positionUs);
 
-    /// <summary>Current audio clock position (master clock) in microseconds.</summary>
+    /// <summary>Audio-anchored master clock in microseconds.</summary>
     Int64  GetAudioPositionUs();
 
     /// <summary>
-    /// Returns the video frame whose presentation time best matches
-    /// audioPtsUs. Returns false if no frame is available yet.
+    /// Returns the most recently presented video frame. The audioPtsUs argument
+    /// is accepted for API symmetry but currently ignored: the native player
+    /// drives its own A/V sync timeline and exposes the frame whose deadline
+    /// has just passed.
     /// </summary>
     bool TryGetFrame(Int64 audioPtsUs, [Out] FrameData^% frame);
 
@@ -46,9 +50,13 @@ public:
     property double Duration    { double get(); }
 
 private:
-    // Stored as void* to avoid exposing native headers to C# consumers;
-    // cast back in the .cpp implementation.
-    MagicStudio::Native::MediaDecoder* _decoder;
+    // Stored as void* to keep MagicFFmpegPlayer.h out of consumers; cast back
+    // in the .cpp implementation.
+    void*  _handle;
+    // Cached dimensions to size the readback buffer without poking the native
+    // handle on every frame.
+    int    _width;
+    int    _height;
 };
 
 }}} // namespace MagicStudio::FFmpegPlus::Wrapper

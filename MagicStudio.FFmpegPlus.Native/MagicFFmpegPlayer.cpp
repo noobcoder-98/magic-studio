@@ -69,6 +69,14 @@ extern "C" {
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
+// Native is a static library, so these directives ride with the .lib and
+// resolve the FFmpeg + SDL2 imports for whoever links us downstream
+// (the C++/CLI Wrapper). Library search path is supplied by the consumer.
+#pragma comment(lib, "avcodec.lib")
+#pragma comment(lib, "avformat.lib")
+#pragma comment(lib, "avutil.lib")
+#pragma comment(lib, "swresample.lib")
+#pragma comment(lib, "SDL2.lib")
 
 using Microsoft::WRL::ComPtr;
 
@@ -908,7 +916,15 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
     vp->serial   = serial;
 
     // Release any stale BGRA texture that might be sitting in this slot.
-    if (vp->tex) { vp->tex->Release(); vp->tex = nullptr; }
+    // Must hold pictq.mutex: when the queue drains to size==0 with
+    // keep_last==1, windex coincides with rindex and the UI reader
+    // (magic_player_acquire_current_texture) may still be inspecting tex.
+    if (vp->tex) {
+        SDL_LockMutex(is->pictq.mutex);
+        vp->tex->Release();
+        vp->tex = nullptr;
+        SDL_UnlockMutex(is->pictq.mutex);
+    }
 
     if (src_frame->format == AV_PIX_FMT_D3D11) {
         ID3D11Texture2D *nv12 = reinterpret_cast<ID3D11Texture2D*>(src_frame->data[0]);
@@ -1587,50 +1603,59 @@ fail:
 
 extern "C" {
 
-struct MagicPlayerHandle { VideoState *is; };
+struct MagicPlayerHandle {
+    VideoState              *is;
+    // Lazily allocated, sized to the current frame -- staging texture used by
+    // magic_player_copy_current_bgra to read back BGRA pixels into a CPU buffer
+    // without bouncing through the wrapper's own ID3D11Device.
+    ComPtr<ID3D11Texture2D>  staging;
+    int                      staging_w = 0;
+    int                      staging_h = 0;
+    std::mutex               staging_mutex;
+};
 
-__declspec(dllexport) MagicPlayerHandle* magic_player_open(const char* path) {
+MagicPlayerHandle* magic_player_open(const char* path) {
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_TIMER) < 0) return nullptr;
     VideoState *is = stream_open(path);
     if (!is) return nullptr;
-    auto *h = (MagicPlayerHandle*)av_mallocz(sizeof(MagicPlayerHandle));
+    auto *h = new MagicPlayerHandle();
     h->is = is;
     return h;
 }
 
-__declspec(dllexport) void magic_player_close(MagicPlayerHandle *h) {
+void magic_player_close(MagicPlayerHandle *h) {
     if (!h) return;
     if (h->is) stream_close(h->is);
-    av_free(h);
+    delete h;
 }
 
-__declspec(dllexport) void magic_player_toggle_pause(MagicPlayerHandle *h) {
+void magic_player_toggle_pause(MagicPlayerHandle *h) {
     if (h && h->is) toggle_pause(h->is);
 }
 
-__declspec(dllexport) int magic_player_is_paused(MagicPlayerHandle *h) {
+int magic_player_is_paused(MagicPlayerHandle *h) {
     return h && h->is ? h->is->paused : 0;
 }
 
-__declspec(dllexport) void magic_player_seek_us(MagicPlayerHandle *h, int64_t position_us) {
+void magic_player_seek_us(MagicPlayerHandle *h, int64_t position_us) {
     if (!h || !h->is) return;
     int64_t target = av_rescale(position_us, AV_TIME_BASE, 1'000'000LL);
     stream_seek(h->is, target, 0, 0);
 }
 
-__declspec(dllexport) int64_t magic_player_master_clock_us(MagicPlayerHandle *h) {
+int64_t magic_player_master_clock_us(MagicPlayerHandle *h) {
     if (!h || !h->is) return 0;
     double t = get_master_clock(h->is);
     if (isnan(t)) return 0;
     return (int64_t)(t * 1'000'000.0);
 }
 
-__declspec(dllexport) double magic_player_duration_seconds(MagicPlayerHandle *h) {
+double magic_player_duration_seconds(MagicPlayerHandle *h) {
     if (!h || !h->is || !h->is->ic || h->is->ic->duration == AV_NOPTS_VALUE) return 0;
     return (double)h->is->ic->duration / AV_TIME_BASE;
 }
 
-__declspec(dllexport) int magic_player_video_size(MagicPlayerHandle *h, int *w, int *out_h) {
+int magic_player_video_size(MagicPlayerHandle *h, int *w, int *out_h) {
     if (!h || !h->is || !h->is->video_st) return 0;
     *w     = h->is->video_st->codecpar->width;
     *out_h = h->is->video_st->codecpar->height;
@@ -1640,7 +1665,7 @@ __declspec(dllexport) int magic_player_video_size(MagicPlayerHandle *h, int *w, 
 // Returns AddRef'd; caller releases. The returned BGRA texture is the most
 // recent frame whose presentation deadline has passed (driven by video_refresh
 // on its worker thread).
-__declspec(dllexport) int magic_player_acquire_current_texture(MagicPlayerHandle *h, ID3D11Texture2D **out) {
+int magic_player_acquire_current_texture(MagicPlayerHandle *h, ID3D11Texture2D **out) {
     if (!h || !h->is || !out) return 0;
     *out = nullptr;
     SDL_LockMutex(h->is->pictq.mutex);
@@ -1655,9 +1680,73 @@ __declspec(dllexport) int magic_player_acquire_current_texture(MagicPlayerHandle
     return *out ? 1 : 0;
 }
 
+int magic_player_copy_current_bgra(MagicPlayerHandle *h,
+                                   uint8_t *dst, int dst_capacity_bytes,
+                                   int *out_w, int *out_h) {
+    if (!h || !dst || !out_w || !out_h) return 0;
+
+    ID3D11Texture2D *src = nullptr;
+    if (!magic_player_acquire_current_texture(h, &src) || !src) return 0;
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    src->GetDesc(&desc);
+    const int w = (int)desc.Width;
+    const int h_ = (int)desc.Height;
+    const int needed = w * h_ * 4;
+    if (dst_capacity_bytes < needed) { src->Release(); return 0; }
+
+    std::lock_guard<std::mutex> lock(h->staging_mutex);
+
+    // (Re)create the staging texture if size changed.
+    if (!h->staging || h->staging_w != w || h->staging_h != h_) {
+        D3D11_TEXTURE2D_DESC sd = {};
+        sd.Width            = (UINT)w;
+        sd.Height           = (UINT)h_;
+        sd.MipLevels        = 1;
+        sd.ArraySize        = 1;
+        sd.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
+        sd.SampleDesc.Count = 1;
+        sd.Usage            = D3D11_USAGE_STAGING;
+        sd.CPUAccessFlags   = D3D11_CPU_ACCESS_READ;
+        h->staging.Reset();
+        if (FAILED(g_gpu.device->CreateTexture2D(&sd, nullptr, &h->staging))) {
+            src->Release();
+            return 0;
+        }
+        h->staging_w = w;
+        h->staging_h = h_;
+    }
+
+    // GPU copy + CPU map, serialised with the video processor's blt mutex so
+    // we don't race the conversion that produces fp->tex.
+    D3D11_MAPPED_SUBRESOURCE map = {};
+    HRESULT hr;
+    {
+        std::lock_guard<std::mutex> blt(g_gpu.bltMutex);
+        g_gpu.context->CopyResource(h->staging.Get(), src);
+        hr = g_gpu.context->Map(h->staging.Get(), 0, D3D11_MAP_READ, 0, &map);
+    }
+    src->Release();
+    if (FAILED(hr)) return 0;
+
+    const int row_bytes = w * 4;
+    const uint8_t *srcRow = (const uint8_t*)map.pData;
+    uint8_t       *dstRow = dst;
+    for (int y = 0; y < h_; ++y) {
+        memcpy(dstRow, srcRow, row_bytes);
+        srcRow += map.RowPitch;
+        dstRow += row_bytes;
+    }
+    g_gpu.context->Unmap(h->staging.Get(), 0);
+
+    *out_w = w;
+    *out_h = h_;
+    return 1;
+}
+
 // Returns AddRef'd; caller releases. Stays valid for the lifetime of the
 // process (the device is a singleton).
-__declspec(dllexport) int magic_player_acquire_dxgi_device(IDXGIDevice **out) {
+int magic_player_acquire_dxgi_device(IDXGIDevice **out) {
     if (!out) return 0;
     *out = nullptr;
     if (gpu_create_device() < 0) return 0;

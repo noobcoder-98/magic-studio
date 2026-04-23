@@ -1,14 +1,23 @@
 #include "pch.h"
 #include "MediaPlayerWrapper.h"
 
+// Native owns the real layout of MagicPlayerHandle. We never instantiate or
+// sizeof it here -- only pass pointers through -- but C++/CLI needs a complete
+// type in this TU to avoid LNK4248 ("unresolved typeref") in the metadata.
+struct MagicPlayerHandle {};
+
 using namespace msclr::interop;
 
 namespace MagicStudio {
 namespace FFmpegPlus {
 namespace Wrapper {
 
+static inline ::MagicPlayerHandle* H(void* p) {
+    return reinterpret_cast<::MagicPlayerHandle*>(p);
+}
+
 MediaPlayer::MediaPlayer()
-    : _decoder(new MagicStudio::Native::MediaDecoder())
+    : _handle(nullptr), _width(0), _height(0)
 {}
 
 MediaPlayer::~MediaPlayer() {
@@ -16,49 +25,114 @@ MediaPlayer::~MediaPlayer() {
 }
 
 MediaPlayer::!MediaPlayer() {
-    if (_decoder) {
-        _decoder->Close();
-        delete _decoder;
-        _decoder = nullptr;
+    if (_handle) {
+        magic_player_close(H(_handle));
+        _handle = nullptr;
     }
 }
 
 bool MediaPlayer::Open(String^ path) {
+    if (_handle) {
+        magic_player_close(H(_handle));
+        _handle = nullptr;
+    }
     std::string nativePath = marshal_as<std::string>(path);
-    return _decoder->Open(nativePath.c_str());
-}
+    _handle = magic_player_open(nativePath.c_str());
+    if (!_handle) return false;
 
-void MediaPlayer::Play()  { _decoder->Play();  }
-void MediaPlayer::Pause() { _decoder->Pause(); }
-void MediaPlayer::Stop()  { _decoder->Stop();  }
-void MediaPlayer::Seek(Int64 positionUs) { _decoder->Seek(static_cast<int64_t>(positionUs)); }
-
-Int64 MediaPlayer::GetAudioPositionUs() {
-    return static_cast<Int64>(_decoder->GetAudioPositionUs());
-}
-
-bool MediaPlayer::TryGetFrame(Int64 audioPtsUs, [Out] FrameData^% frame) {
-    std::vector<uint8_t> bgra;
-    int width = 0, height = 0;
-
-    if (!_decoder->TryGetFrameForTime(static_cast<int64_t>(audioPtsUs), bgra, width, height))
-        return false;
-
-    auto frameData = gcnew FrameData();
-    frameData->Width  = width;
-    frameData->Height = height;
-
-    array<Byte>^ managed = gcnew array<Byte>(static_cast<int>(bgra.size()));
-    pin_ptr<Byte> pin = &managed[0];
-    memcpy(pin, bgra.data(), bgra.size());
-    frameData->BgraData = managed;
-
-    frame = frameData;
+    // Cache the video size up front so TryGetFrame can size the readback
+    // buffer without a per-frame native call.
+    int w = 0, h = 0;
+    if (magic_player_video_size(H(_handle), &w, &h)) {
+        _width  = w;
+        _height = h;
+    }
     return true;
 }
 
-int    MediaPlayer::VideoWidth::get()  { return _decoder->GetVideoWidth();  }
-int    MediaPlayer::VideoHeight::get() { return _decoder->GetVideoHeight(); }
-double MediaPlayer::Duration::get()    { return _decoder->GetDurationSeconds(); }
+void MediaPlayer::Play() {
+    if (!_handle) return;
+    if (magic_player_is_paused(H(_handle)))
+        magic_player_toggle_pause(H(_handle));
+}
+
+void MediaPlayer::Pause() {
+    if (!_handle) return;
+    if (!magic_player_is_paused(H(_handle)))
+        magic_player_toggle_pause(H(_handle));
+}
+
+void MediaPlayer::Stop() {
+    if (!_handle) return;
+    Pause();
+    magic_player_seek_us(H(_handle), 0);
+}
+
+void MediaPlayer::Seek(Int64 positionUs) {
+    if (!_handle) return;
+    magic_player_seek_us(H(_handle), static_cast<int64_t>(positionUs));
+}
+
+Int64 MediaPlayer::GetAudioPositionUs() {
+    if (!_handle) return 0;
+    return static_cast<Int64>(magic_player_master_clock_us(H(_handle)));
+}
+
+bool MediaPlayer::TryGetFrame(Int64 /*audioPtsUs*/, [Out] FrameData^% frame) {
+    frame = nullptr;
+    if (!_handle) return false;
+
+    // Re-query dimensions in case the stream wasn't ready when Open() returned.
+    if (_width <= 0 || _height <= 0) {
+        int w = 0, h = 0;
+        if (!magic_player_video_size(H(_handle), &w, &h) || w <= 0 || h <= 0)
+            return false;
+        _width  = w;
+        _height = h;
+    }
+
+    const int needed = _width * _height * 4;
+    array<Byte>^ managed = gcnew array<Byte>(needed);
+    int outW = 0, outH = 0;
+    {
+        pin_ptr<Byte> pin = &managed[0];
+        if (!magic_player_copy_current_bgra(H(_handle),
+                                            pin, needed,
+                                            &outW, &outH))
+            return false;
+    }
+
+    // The frame size could change mid-stream (e.g. resolution switch); if so,
+    // grow the cached dims and ask the next Draw cycle to allocate again.
+    if (outW != _width || outH != _height) {
+        _width  = outW;
+        _height = outH;
+        return false;
+    }
+
+    auto fd    = gcnew FrameData();
+    fd->Width  = outW;
+    fd->Height = outH;
+    fd->BgraData = managed;
+    frame = fd;
+    return true;
+}
+
+int MediaPlayer::VideoWidth::get() {
+    if (!_handle) return 0;
+    int w = 0, h = 0;
+    return magic_player_video_size(H(_handle), &w, &h) ? w : 0;
+}
+
+int MediaPlayer::VideoHeight::get() {
+    if (!_handle) return 0;
+    int w = 0, h = 0;
+    return magic_player_video_size(H(_handle), &w, &h) ? h : 0;
+}
+
+double MediaPlayer::Duration::get() {
+    if (!_handle) return 0;
+    return magic_player_duration_seconds(H(_handle));
+}
 
 }}} // namespace MagicStudio::FFmpegPlus::Wrapper
