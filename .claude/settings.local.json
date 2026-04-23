@@ -4,7 +4,10 @@
       "Bash(git -C \"D:\\\\source\\\\magic-studio\" log --oneline)",
       "Bash(git *)",
       "Bash(grep -E \"\\\\.\\(cpp|h\\)$\")",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.FFmpegPlus.Native\\\\MagicStudio.FFmpegPlus.Native.vcxproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 80)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.FFmpegPlus.Native\\\\MagicStudio.FFmpegPlus.Native.vcxproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 120)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.FFmpegPlus.Native\\\\MagicStudio.FFmpegPlus.Native.vcxproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 40)"
     ]
   }
 }

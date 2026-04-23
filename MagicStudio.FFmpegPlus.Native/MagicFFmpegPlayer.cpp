@@ -36,6 +36,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+// d3d11.h / dxgi.h declare C++ operator overloads (==, !=) on structs such as
+// D3D11_VIEWPORT / D3D11_RECT via guiddef.h. They must be included *before* any
+// extern "C" block; otherwise libavutil/hwcontext_d3d11va.h pulls d3d11.h in
+// with C linkage and the compiler rejects the overloads with C2733.
+#include <d3d11.h>
+#include <dxgi.h>
+#include <wrl/client.h>
+
 extern "C" {
 #include "libavutil/avstring.h"
 #include "libavutil/channel_layout.h"
@@ -56,10 +64,6 @@ extern "C" {
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_thread.h>
-
-#include <d3d11.h>
-#include <dxgi.h>
-#include <wrl/client.h>
 
 #include <mutex>
 
