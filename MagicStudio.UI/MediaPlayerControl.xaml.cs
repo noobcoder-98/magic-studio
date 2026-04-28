@@ -5,15 +5,24 @@ using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System;
+using System.Runtime.InteropServices;
 using Windows.Foundation;
-using Windows.Graphics.DirectX;
+using Windows.Graphics.DirectX.Direct3D11;
+using WinRT;
 
 namespace MagicStudio.UI;
 
 public sealed partial class MediaPlayerControl : UserControl, IDisposable
 {
+    // IID_IDXGISurface — used to QI the AddRef'd ID3D11Texture2D into a
+    // surface that CreateDirect3D11SurfaceFromDXGISurface can wrap.
+    private static readonly Guid IID_IDXGISurface =
+        new("CAFCB56C-6AC3-4889-BF47-9E23BBD260EC");
+
     private Player?       _player;
+    private CanvasDevice? _canvasDevice;
     private CanvasBitmap? _frameBitmap;
+    private ulong         _lastVersion;
     private bool          _playing;
     private bool          _disposed;
 
@@ -34,11 +43,19 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
 
     public bool Open(string path)
     {
+        // Drop the previous file's cached frame; the new stream will publish
+        // its own textures with fresh version numbers.
+        _frameBitmap?.Dispose();
+        _frameBitmap = null;
+        _lastVersion = 0;
+
         _player?.Dispose();
         _player = new Player();
         bool ok = _player.Open(path);
         if (ok)
         {
+            EnsureCanvasDeviceBoundToPlayer();
+
             double duration = _player.Duration;
             _suppressSlider = true;
             ProgressSlider.Maximum = duration > 0 ? duration : 1;
@@ -54,7 +71,7 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
         if (_player is null) return;
         _player.Play();
         _playing = true;
-        PlayPauseButton.Content = "\uE769"; // Pause glyph
+        PlayPauseButton.Content = ""; // Pause glyph
         VideoCanvas.Invalidate();
     }
 
@@ -62,7 +79,7 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
     {
         _player?.Pause();
         _playing = false;
-        PlayPauseButton.Content = "\uE768"; // Play glyph
+        PlayPauseButton.Content = ""; // Play glyph
         VideoCanvas.Invalidate();
     }
 
@@ -72,7 +89,8 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
 
     private void VideoCanvas_CreateResources(CanvasControl sender, CanvasCreateResourcesEventArgs args)
     {
-        // Nothing to pre-allocate; _frameBitmap is created lazily on first frame.
+        // Nothing to pre-allocate; the frame bitmap is wrapped lazily around
+        // whatever ID3D11Texture2D the native player publishes next.
     }
 
     private void VideoCanvas_Draw(CanvasControl sender, CanvasDrawEventArgs args)
@@ -80,26 +98,26 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
         if (_player is null)
             return;
 
-        long pts = _player.GetAudioPositionUs();
-
-        if (_player.TryGetFrame(pts, out byte[]? bgra, out int w, out int h) && bgra is not null)
+        IntPtr texturePtr = _player.TryAcquireCurrentTexture(out ulong version, out _, out _);
+        if (texturePtr != IntPtr.Zero)
         {
-            if (_frameBitmap is null
-                || (int)_frameBitmap.SizeInPixels.Width  != w
-                || (int)_frameBitmap.SizeInPixels.Height != h)
+            try
             {
-                _frameBitmap?.Dispose();
-                _frameBitmap = CanvasBitmap.CreateFromBytes(
-                    sender, bgra, w, h,
-                    DirectXPixelFormat.B8G8R8A8UIntNormalized);
+                if (version != _lastVersion)
+                {
+                    // New frame -- wrap its texture as a CanvasBitmap. This is
+                    // pure ref-counting; no pixel data leaves the GPU.
+                    var newBitmap = WrapTextureAsBitmap(sender, texturePtr);
+                    _frameBitmap?.Dispose();
+                    _frameBitmap = newBitmap;
+                    _lastVersion = version;
+                    UpdateProgress(_player.GetAudioPositionUs());
+                }
             }
-            else
+            finally
             {
-                // Reuse the existing GPU texture — avoids reallocation every frame.
-                _frameBitmap.SetPixelBytes(bgra);
+                Marshal.Release(texturePtr);
             }
-
-            UpdateProgress(pts);
         }
 
         if (_frameBitmap is not null)
@@ -149,9 +167,94 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
         if (_player is null) return;
         _player.Seek(seconds);
         _playing = true;
-        PlayPauseButton.Content = "\uE769"; // Pause glyph
+        PlayPauseButton.Content = ""; // Pause glyph
         VideoCanvas.Invalidate();
     }
+
+    // -------------------------------------------------------------------------
+    // Win2D <-> native D3D11 device + texture binding
+    // -------------------------------------------------------------------------
+
+    // Build a CanvasDevice that wraps the *same* D3D11 device the FFmpeg
+    // decoder + video processor write into, so CanvasBitmaps wrapping the
+    // player's BGRA textures can be drawn without a CPU copy. The native
+    // pipeline holds a process-singleton device, so we only ever do this
+    // once; subsequent Open() calls reuse the existing CanvasDevice.
+    private void EnsureCanvasDeviceBoundToPlayer()
+    {
+        if (_canvasDevice is not null || _player is null) return;
+
+        IntPtr dxgiPtr = _player.AcquireDxgiDevice();
+        if (dxgiPtr == IntPtr.Zero) return;
+
+        try
+        {
+            IDirect3DDevice d3dDevice = CreateDirect3DDeviceFromDxgi(dxgiPtr);
+            _canvasDevice = CanvasDevice.CreateFromDirect3D11Device(d3dDevice);
+            VideoCanvas.CustomDevice = _canvasDevice;
+        }
+        finally
+        {
+            Marshal.Release(dxgiPtr);
+        }
+    }
+
+    // QI(ID3D11Texture2D -> IDXGISurface), wrap the surface as IDirect3DSurface,
+    // then hand it to Win2D.
+    //
+    // Lifetime note: CanvasBitmap.CreateFromDirect3D11Surface QIs its own
+    // independent ref on the underlying IDXGISurface (and through that the
+    // ID3D11Texture2D). The IDirect3DSurface RCW we built via MarshalInspectable
+    // *also* owns a ref through its IInspectable wrapper. If we leave the RCW
+    // for the GC to finalize, that ref keeps an 8MB BGRA texture alive per
+    // frame -- at 30+ fps the finalizer queue can't keep up and managed memory
+    // balloons until a Gen2 collection runs (visible as a render-loop stutter).
+    // Casting to IDisposable invokes IClosable::Close on the WinRT wrapper,
+    // which releases its internal IDXGISurface ref synchronously and lets the
+    // texture die the moment the next CanvasBitmap replaces this one.
+    private static CanvasBitmap WrapTextureAsBitmap(ICanvasResourceCreator resourceCreator, IntPtr texturePtr)
+    {
+        Guid iid = IID_IDXGISurface;
+        int hr = Marshal.QueryInterface(texturePtr, ref iid, out IntPtr surfacePtr);
+        Marshal.ThrowExceptionForHR(hr);
+        IDirect3DSurface? d3dSurface = null;
+        try
+        {
+            d3dSurface = CreateDirect3DSurfaceFromDxgi(surfacePtr);
+            return CanvasBitmap.CreateFromDirect3D11Surface(resourceCreator, d3dSurface);
+        }
+        finally
+        {
+            (d3dSurface as IDisposable)?.Dispose();
+            Marshal.Release(surfacePtr);
+        }
+    }
+
+    // The two d3d11.dll exports return AddRef'd IInspectable* via PreserveSig=false,
+    // so the HRESULT is converted into an exception automatically. We then build a
+    // managed RCW with MarshalInspectable<T>.FromAbi (which adds its own ref via
+    // ComWrappers) and Release the original native ref to keep the count balanced.
+    private static IDirect3DDevice CreateDirect3DDeviceFromDxgi(IntPtr dxgiDevice)
+    {
+        CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice, out IntPtr abi);
+        try { return MarshalInspectable<IDirect3DDevice>.FromAbi(abi); }
+        finally { Marshal.Release(abi); }
+    }
+
+    private static IDirect3DSurface CreateDirect3DSurfaceFromDxgi(IntPtr dxgiSurface)
+    {
+        CreateDirect3D11SurfaceFromDXGISurface(dxgiSurface, out IntPtr abi);
+        try { return MarshalInspectable<IDirect3DSurface>.FromAbi(abi); }
+        finally { Marshal.Release(abi); }
+    }
+
+    [DllImport("d3d11.dll", ExactSpelling = true, PreserveSig = false)]
+    private static extern void CreateDirect3D11DeviceFromDXGIDevice(IntPtr dxgiDevice,
+                                                                    out IntPtr graphicsDevice);
+
+    [DllImport("d3d11.dll", ExactSpelling = true, PreserveSig = false)]
+    private static extern void CreateDirect3D11SurfaceFromDXGISurface(IntPtr dxgiSurface,
+                                                                      out IntPtr graphicsSurface);
 
     // -------------------------------------------------------------------------
     // Helpers
@@ -192,9 +295,17 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _player?.Dispose();
-        _player = null;
+
         _frameBitmap?.Dispose();
         _frameBitmap = null;
+
+        // Order matters: drop the player first so its singleton D3D11 device
+        // stops being referenced before we tear down the CanvasDevice that
+        // also wraps it.
+        _player?.Dispose();
+        _player = null;
+
+        _canvasDevice?.Dispose();
+        _canvasDevice = null;
     }
 }

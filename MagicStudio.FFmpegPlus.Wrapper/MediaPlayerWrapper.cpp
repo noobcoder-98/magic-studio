@@ -16,9 +16,7 @@ static inline ::MagicPlayerHandle* H(void* p) {
     return reinterpret_cast<::MagicPlayerHandle*>(p);
 }
 
-MediaPlayer::MediaPlayer()
-    : _handle(nullptr), _width(0), _height(0), _lastVersion(0), _bgraBuffer(nullptr)
-{}
+MediaPlayer::MediaPlayer() : _handle(nullptr) {}
 
 MediaPlayer::~MediaPlayer() {
     this->!MediaPlayer();
@@ -36,21 +34,9 @@ bool MediaPlayer::Open(String^ path) {
         magic_player_close(H(_handle));
         _handle = nullptr;
     }
-    _lastVersion = 0;
-    _bgraBuffer  = nullptr;
-
     std::string nativePath = marshal_as<std::string>(path);
     _handle = magic_player_open(nativePath.c_str());
-    if (!_handle) return false;
-
-    // Cache the video size up front so TryGetFrame can size the readback
-    // buffer without a per-frame native call.
-    int w = 0, h = 0;
-    if (magic_player_video_size(H(_handle), &w, &h)) {
-        _width  = w;
-        _height = h;
-    }
-    return true;
+    return _handle != nullptr;
 }
 
 void MediaPlayer::Play() {
@@ -81,55 +67,36 @@ Int64 MediaPlayer::GetAudioPositionUs() {
     return static_cast<Int64>(magic_player_master_clock_us(H(_handle)));
 }
 
-bool MediaPlayer::TryGetFrame(Int64 /*audioPtsUs*/, [Out] FrameData^% frame) {
-    frame = nullptr;
-    if (!_handle) return false;
+IntPtr MediaPlayer::AcquireDxgiDevice() {
+    IDXGIDevice* dev = nullptr;
+    if (!magic_player_acquire_dxgi_device(&dev) || !dev)
+        return IntPtr::Zero;
+    return IntPtr(dev);
+}
 
-    // Cheap check: same frame as last time? Avoid the GPU readback + managed
-    // allocation entirely. The host should keep using its cached bitmap.
-    UInt64 version = magic_player_current_frame_version(H(_handle));
-    if (version == 0 || version == _lastVersion)
-        return false;
+IntPtr MediaPlayer::TryAcquireCurrentTexture(UInt64% version,
+                                             int% width,
+                                             int% height) {
+    version = 0;
+    width   = 0;
+    height  = 0;
+    if (!_handle) return IntPtr::Zero;
 
-    // Re-query dimensions in case the stream wasn't ready when Open() returned.
-    if (_width <= 0 || _height <= 0) {
-        int w = 0, h = 0;
-        if (!magic_player_video_size(H(_handle), &w, &h) || w <= 0 || h <= 0)
-            return false;
-        _width  = w;
-        _height = h;
-    }
+    // Cheap version check first: if no frame has ever been published, skip
+    // the texture acquire/Release dance entirely.
+    UInt64 v = magic_player_current_frame_version(H(_handle));
+    if (v == 0) return IntPtr::Zero;
 
-    const int needed = _width * _height * 4;
-    if (_bgraBuffer == nullptr || _bgraBuffer->Length != needed)
-        _bgraBuffer = gcnew array<Byte>(needed);
+    ID3D11Texture2D* tex = nullptr;
+    if (!magic_player_acquire_current_texture(H(_handle), &tex) || !tex)
+        return IntPtr::Zero;
 
-    int outW = 0, outH = 0;
-    {
-        pin_ptr<Byte> pin = &_bgraBuffer[0];
-        if (!magic_player_copy_current_bgra(H(_handle),
-                                            pin, needed,
-                                            &outW, &outH))
-            return false;
-    }
-
-    // The frame size could change mid-stream (e.g. resolution switch); if so,
-    // grow the cached dims and ask the next Draw cycle to allocate again.
-    if (outW != _width || outH != _height) {
-        _width      = outW;
-        _height     = outH;
-        _bgraBuffer = nullptr;
-        return false;
-    }
-
-    _lastVersion = version;
-
-    auto fd    = gcnew FrameData();
-    fd->Width  = outW;
-    fd->Height = outH;
-    fd->BgraData = _bgraBuffer;
-    frame = fd;
-    return true;
+    D3D11_TEXTURE2D_DESC desc = {};
+    tex->GetDesc(&desc);
+    version = v;
+    width   = static_cast<int>(desc.Width);
+    height  = static_cast<int>(desc.Height);
+    return IntPtr(tex);
 }
 
 int MediaPlayer::VideoWidth::get() {

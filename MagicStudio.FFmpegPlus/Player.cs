@@ -4,9 +4,10 @@ using MagicStudio.FFmpegPlus.Wrapper;
 namespace MagicStudio.FFmpegPlus;
 
 /// <summary>
-/// Thin C# façade over the C++/CLI MediaPlayer.
-/// Instantiate, call Open() then Play(), then call GetAudioPositionUs() +
-/// TryGetFrame() from your Win2D Draw handler.
+/// Thin C# façade over the C++/CLI MediaPlayer. The host instantiates one,
+/// calls Open(), wires Win2D to AcquireDxgiDevice() once, then on each Draw
+/// pulls the current frame's ID3D11Texture2D via TryAcquireCurrentTexture()
+/// and wraps it as a CanvasBitmap.
 /// </summary>
 public sealed partial class Player : IDisposable
 {
@@ -28,21 +29,20 @@ public sealed partial class Player : IDisposable
     public long GetAudioPositionUs() => _impl.GetAudioPositionUs();
 
     /// <summary>
-    /// Retrieves the video frame that should be displayed at <paramref name="audioPtsUs"/>.
-    /// Returns false when no frame has been decoded yet.
+    /// AddRef'd IDXGIDevice* for the player's shared D3D11 device, or
+    /// IntPtr.Zero if unavailable. Caller releases via Marshal.Release once
+    /// CanvasDevice has captured its own reference.
     /// </summary>
-    public bool TryGetFrame(long audioPtsUs,
-                            out byte[]? bgraData,
-                            out int width,
-                            out int height)
-    {
-        FrameData? frame = null;
-        bool got = _impl.TryGetFrame(audioPtsUs, out frame);
-        bgraData = frame?.BgraData;
-        width    = frame?.Width  ?? 0;
-        height   = frame?.Height ?? 0;
-        return got;
-    }
+    public IntPtr AcquireDxgiDevice() => _impl.AcquireDxgiDevice();
+
+    /// <summary>
+    /// AddRef'd ID3D11Texture2D* for the most recently presented frame, or
+    /// IntPtr.Zero if no frame is ready. Caller releases the pointer once it
+    /// has been wrapped (e.g. into a CanvasBitmap). The version output lets
+    /// the host skip rewrapping when the same frame is shown twice.
+    /// </summary>
+    public IntPtr TryAcquireCurrentTexture(out ulong version, out int width, out int height)
+        => _impl.TryAcquireCurrentTexture(out version, out width, out height);
 
     public int    VideoWidth  => _impl.VideoWidth;
     public int    VideoHeight => _impl.VideoHeight;

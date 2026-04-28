@@ -16,7 +16,12 @@
       "PowerShell(Get-WinEvent *)",
       "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.UI\\\\MagicStudio.UI.csproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 20)",
       "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.UI\\\\MagicStudio.UI.csproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 10)",
-      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.UI\\\\MagicStudio.UI.csproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 15)"
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"D:\\\\source\\\\MagicStudio\\\\MagicStudio.UI\\\\MagicStudio.UI.csproj\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal 2>&1 | Select-Object -Last 15)",
+      "Bash(awk 'NR==74 || NR==82 || NR==170' D:/source/MagicStudio/MagicStudio.UI/MediaPlayerControl.xaml.cs)",
+      "Bash(xxd)",
+      "PowerShell(dotnet build *)",
+      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb MagicStudio.slnx /p:Configuration=Debug /p:Platform=x64 /v:minimal /m /nologo 2>&1 | Select-String -Pattern \"error|FAILED|Build succeeded\" | Select-Object -First 20)",
+      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb MagicStudio.UI/MagicStudio.UI.csproj /p:Configuration=Debug /p:Platform=x64 /v:minimal /m /nologo 2>&1 | Select-Object -Last 30)"
     ]
   }
 }
