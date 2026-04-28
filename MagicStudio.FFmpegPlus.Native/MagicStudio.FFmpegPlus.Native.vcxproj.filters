@@ -17,12 +17,21 @@
     <ClInclude Include="MagicFFmpegPlayer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="MagicFFplay.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="MagicFFmpegPlayer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ffplay.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MagicFFplay.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

@@ -25,7 +25,22 @@
             <Button Content="Open File" Click="OpenFile_Click" />
         </StackPanel>
 
-        <!-- Player -->
-        <local:MediaPlayerControl x:Name="MediaPlayer" Grid.Row="1" />
+        <!-- Side-by-side comparison: left = MagicFFmpegPlayer, right = MagicFFplay -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <!--<ColumnDefinition Width="*" />-->
+                <ColumnDefinition Width="4" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Existing player (MagicFFmpegPlayer.cpp) -->
+            <!--<local:MediaPlayerControl x:Name="MediaPlayer" Grid.Column="0" />-->
+
+            <!-- Splitter -->
+            <Border Grid.Column="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+            <!-- New player (MagicFFplay.cpp ffplay.c C++ port) -->
+            <local:MagicFFplayControl x:Name="FFplayPlayer" Grid.Column="2" />
+        </Grid>
     </Grid>
 </Window>

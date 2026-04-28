@@ -11,12 +11,11 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
 
-        // WinUI 3 does not fire Unloaded on the window's content tree when the
-        // window closes, so we must explicitly tear down the player here.
-        // Without this, the native decoder + refresh + SDL audio threads stay
-        // live while the CLR begins unloading DLLs around them, surfacing as
-        // an unhandled Win32 exception during shutdown.
-        Closed += (_, _) => MediaPlayer.Dispose();
+        Closed += (_, _) =>
+        {
+            //MediaPlayer.Dispose();
+            FFplayPlayer.Dispose();
+        };
     }
 
     private async void OpenFile_Click(object sender, RoutedEventArgs e)
@@ -36,10 +35,14 @@ public sealed partial class MainWindow : Window
         var file = await picker.PickSingleFileAsync();
         if (file is null) return;
 
-        MediaPlayer.Pause();
-        if (MediaPlayer.Open(file.Path))
-        {
-            MediaPlayer.Play();
-        }
+        // Open the same file in both players simultaneously.
+        //MediaPlayer.Pause();
+        FFplayPlayer.Pause();
+
+        //if (MediaPlayer.Open(file.Path))
+        //    MediaPlayer.Play();
+
+        if (FFplayPlayer.Open(file.Path))
+            FFplayPlayer.Play();
     }
 }
