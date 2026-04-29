@@ -38,7 +38,9 @@
 // d3d11.h must come before any extern "C" block (operator overloads on
 // structs like D3D11_VIEWPORT are C++-only and fail inside C linkage).
 #include <d3d11.h>
+#include <d3d11_4.h>      // ID3D11VideoContext2 (VideoProcessorSetStreamHDRMetaData)
 #include <dxgi.h>
+#include <dxgi1_5.h>      // DXGI_HDR_METADATA_HDR10, DXGI_HDR_METADATA_TYPE
 #include <wrl/client.h>
 
 extern "C" {
@@ -48,6 +50,7 @@ extern "C" {
 #include "libavutil/fifo.h"
 #include "libavutil/hwcontext.h"
 #include "libavutil/hwcontext_d3d11va.h"
+#include "libavutil/mastering_display_metadata.h"
 #include "libavutil/mathematics.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
@@ -112,10 +115,20 @@ struct FfplayGpu {
     ComPtr<IDXGIDevice>                    dxgiDevice;
     ComPtr<ID3D11VideoDevice>              videoDevice;
     ComPtr<ID3D11VideoContext>             videoContext;
+    ComPtr<ID3D11VideoContext2>            videoContext2;   // for ColorSpace1 + HDR metadata
     ComPtr<ID3D11VideoProcessorEnumerator> enumerator;
     ComPtr<ID3D11VideoProcessor>           processor;
     int  procW = 0;
     int  procH = 0;
+
+    // Cached input description so we re-init the processor only when the
+    // stream's color space (or size) actually changes.  Output is always
+    // RGB BT.709 SDR (so the driver tone-maps HDR PQ/HLG -> SDR for us).
+    DXGI_COLOR_SPACE_TYPE  inColorSpace  = DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
+    DXGI_COLOR_SPACE_TYPE  outColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    bool                   hasHdrMeta    = false;
+    DXGI_HDR_METADATA_HDR10 hdrMeta      = {};
+
     std::mutex          bltMutex;
     std::recursive_mutex ffmpegLock;
 };
@@ -141,40 +154,148 @@ static int ffplay_gpu_create(FfplayGpu* g) {
     if (FAILED(g->device.As(&g->dxgiDevice)))    return -1;
     if (FAILED(g->device.As(&g->videoDevice)))   return -1;
     if (FAILED(g->context.As(&g->videoContext))) return -1;
+
+    // ID3D11VideoContext2 (Win10 1607+) gives us VideoProcessorSetStream/
+    // OutputColorSpace1 plus HDR static-metadata APIs.  Treat as fatal --
+    // without it we cannot tone-map HDR -> SDR correctly.
+    if (FAILED(g->videoContext.As(&g->videoContext2))) return -1;
     return 0;
 }
 
-static int ffplay_gpu_ensure_processor(FfplayGpu* g, int w, int h) {
-    if (g->processor && g->procW == w && g->procH == h) return 0;
+// Map AVFrame color metadata to a DXGI_COLOR_SPACE_TYPE understood by the
+// VideoProcessor.  When the input is HDR (PQ/HLG with BT.2020 primaries) the
+// driver tone-maps it down to the SDR output color space we set below.
+static DXGI_COLOR_SPACE_TYPE frame_to_dxgi_color_space(const AVFrame* f) {
+    const bool full = (f->color_range == AVCOL_RANGE_JPEG);
 
-    g->processor.Reset();
-    g->enumerator.Reset();
-    g->procW = w;
-    g->procH = h;
+    // HDR transfer functions take priority: signal them explicitly so the
+    // driver knows to apply ST.2084 / HLG decoding before tone mapping.
+    if (f->color_trc == AVCOL_TRC_SMPTE2084) {
+        // HDR10 PQ -- DXGI only defines the studio-range variant.  Full-range
+        // PQ is non-standard and broadcast/streaming content is always studio.
+        return DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020;
+    }
+    if (f->color_trc == AVCOL_TRC_ARIB_STD_B67) {
+        // HLG -- DXGI exposes only studio range; full-range HLG is non-standard.
+        return DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020;
+    }
 
-    D3D11_VIDEO_PROCESSOR_CONTENT_DESC desc = {};
-    desc.InputFrameFormat           = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
-    desc.InputFrameRate.Numerator   = 60;
-    desc.InputFrameRate.Denominator = 1;
-    desc.InputWidth                 = (UINT)w;
-    desc.InputHeight                = (UINT)h;
-    desc.OutputFrameRate.Numerator  = 60;
-    desc.OutputFrameRate.Denominator= 1;
-    desc.OutputWidth                = (UINT)w;
-    desc.OutputHeight               = (UINT)h;
-    desc.Usage                      = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+    // SDR.  Pick gamut + matrix from primaries / colorspace.
+    const bool isBt2020 = (f->color_primaries == AVCOL_PRI_BT2020) ||
+                          (f->colorspace      == AVCOL_SPC_BT2020_NCL) ||
+                          (f->colorspace      == AVCOL_SPC_BT2020_CL);
+    if (isBt2020) {
+        return full ? DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P2020
+                    : DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020;
+    }
 
-    if (FAILED(g->videoDevice->CreateVideoProcessorEnumerator(&desc, &g->enumerator))) return -1;
-    if (FAILED(g->videoDevice->CreateVideoProcessor(g->enumerator.Get(), 0, &g->processor))) return -1;
+    const bool isBt601 = (f->colorspace == AVCOL_SPC_BT470BG) ||
+                         (f->colorspace == AVCOL_SPC_SMPTE170M);
+    if (isBt601) {
+        return full ? DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601
+                    : DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601;
+    }
 
-    D3D11_VIDEO_PROCESSOR_COLOR_SPACE inCs = {};
-    inCs.YCbCr_Matrix  = 1;
-    inCs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
-    g->videoContext->VideoProcessorSetStreamColorSpace(g->processor.Get(), 0, &inCs);
+    // Default to BT.709 (covers AVCOL_SPC_BT709 and unknown).
+    return full ? DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
+                : DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
+}
 
-    D3D11_VIDEO_PROCESSOR_COLOR_SPACE outCs = {};
-    outCs.RGB_Range = 0;
-    g->videoContext->VideoProcessorSetOutputColorSpace(g->processor.Get(), &outCs);
+// Pull HDR10 mastering-display + content-light side data off the frame and
+// pack it into a DXGI_HDR_METADATA_HDR10.  Returns false if not present.
+static bool frame_to_hdr10_metadata(const AVFrame* f, DXGI_HDR_METADATA_HDR10& out) {
+    AVFrameSideData* mdSide =
+        av_frame_get_side_data(const_cast<AVFrame*>(f), AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
+    if (!mdSide) return false;
+
+    auto* md = reinterpret_cast<AVMasteringDisplayMetadata*>(mdSide->data);
+    out = {};
+
+    // FFmpeg stores primaries as AVRational in [0..1] (CIE xy * 50000 implied
+    // by spec), but the docs say "normalized" -- we convert to the 0.00002
+    // unit DXGI expects.
+    if (md->has_primaries) {
+        out.RedPrimary[0]   = (UINT16)(av_q2d(md->display_primaries[0][0]) * 50000.0);
+        out.RedPrimary[1]   = (UINT16)(av_q2d(md->display_primaries[0][1]) * 50000.0);
+        out.GreenPrimary[0] = (UINT16)(av_q2d(md->display_primaries[1][0]) * 50000.0);
+        out.GreenPrimary[1] = (UINT16)(av_q2d(md->display_primaries[1][1]) * 50000.0);
+        out.BluePrimary[0]  = (UINT16)(av_q2d(md->display_primaries[2][0]) * 50000.0);
+        out.BluePrimary[1]  = (UINT16)(av_q2d(md->display_primaries[2][1]) * 50000.0);
+        out.WhitePoint[0]   = (UINT16)(av_q2d(md->white_point[0])          * 50000.0);
+        out.WhitePoint[1]   = (UINT16)(av_q2d(md->white_point[1])          * 50000.0);
+    }
+    if (md->has_luminance) {
+        // DXGI: max in 1.0 nit units, min in 0.0001 nit units.
+        out.MaxMasteringLuminance = (UINT)(av_q2d(md->max_luminance) * 1.0);
+        out.MinMasteringLuminance = (UINT)(av_q2d(md->min_luminance) * 10000.0);
+    }
+
+    AVFrameSideData* clSide =
+        av_frame_get_side_data(const_cast<AVFrame*>(f), AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
+    if (clSide) {
+        auto* cl = reinterpret_cast<AVContentLightMetadata*>(clSide->data);
+        out.MaxContentLightLevel      = (UINT16)cl->MaxCLL;
+        out.MaxFrameAverageLightLevel = (UINT16)cl->MaxFALL;
+    }
+    return true;
+}
+
+static int ffplay_gpu_ensure_processor(FfplayGpu* g, int w, int h,
+                                       DXGI_COLOR_SPACE_TYPE inCs,
+                                       const DXGI_HDR_METADATA_HDR10* hdrMeta) {
+    const bool sizeChanged   = !g->processor || g->procW != w || g->procH != h;
+    const bool colorChanged  = inCs != g->inColorSpace;
+    const bool metaChanged   = (hdrMeta != nullptr) != g->hasHdrMeta ||
+                               (hdrMeta && memcmp(hdrMeta, &g->hdrMeta, sizeof(*hdrMeta)) != 0);
+
+    if (sizeChanged) {
+        g->processor.Reset();
+        g->enumerator.Reset();
+        g->procW = w;
+        g->procH = h;
+
+        D3D11_VIDEO_PROCESSOR_CONTENT_DESC desc = {};
+        desc.InputFrameFormat           = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+        desc.InputFrameRate.Numerator   = 60;
+        desc.InputFrameRate.Denominator = 1;
+        desc.InputWidth                 = (UINT)w;
+        desc.InputHeight                = (UINT)h;
+        desc.OutputFrameRate.Numerator  = 60;
+        desc.OutputFrameRate.Denominator= 1;
+        desc.OutputWidth                = (UINT)w;
+        desc.OutputHeight               = (UINT)h;
+        desc.Usage                      = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+
+        if (FAILED(g->videoDevice->CreateVideoProcessorEnumerator(&desc, &g->enumerator))) return -1;
+        if (FAILED(g->videoDevice->CreateVideoProcessor(g->enumerator.Get(), 0, &g->processor))) return -1;
+
+        // A fresh processor has no color-space / HDR state -- the inner
+        // blocks below re-apply both because sizeChanged is true.
+        g->hasHdrMeta = false;
+    }
+
+    if (sizeChanged || colorChanged) {
+        g->videoContext2->VideoProcessorSetStreamColorSpace1(g->processor.Get(), 0, inCs);
+        g->videoContext2->VideoProcessorSetOutputColorSpace1(g->processor.Get(),
+            DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+        g->inColorSpace  = inCs;
+        g->outColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    }
+
+    if (sizeChanged || metaChanged) {
+        if (hdrMeta) {
+            g->videoContext2->VideoProcessorSetStreamHDRMetaData(
+                g->processor.Get(), 0,
+                DXGI_HDR_METADATA_TYPE_HDR10, sizeof(*hdrMeta), hdrMeta);
+            g->hdrMeta    = *hdrMeta;
+            g->hasHdrMeta = true;
+        } else if (g->hasHdrMeta) {
+            // Clear stale metadata when switching from HDR to SDR.
+            g->videoContext2->VideoProcessorSetStreamHDRMetaData(
+                g->processor.Get(), 0, DXGI_HDR_METADATA_TYPE_NONE, 0, nullptr);
+            g->hasHdrMeta = false;
+        }
+    }
     return 0;
 }
 
@@ -950,7 +1071,13 @@ static int queue_picture(VideoState* is, AVFrame* src_frame,
     if (src_frame->format == AV_PIX_FMT_D3D11) {
         auto* nv12  = reinterpret_cast<ID3D11Texture2D*>(src_frame->data[0]);
         UINT  slice = (UINT)(intptr_t)src_frame->data[1];
-        if (ffplay_gpu_ensure_processor(is->gpu, vp->width, vp->height) == 0)
+
+        DXGI_COLOR_SPACE_TYPE inCs = frame_to_dxgi_color_space(src_frame);
+        DXGI_HDR_METADATA_HDR10 meta = {};
+        const bool hasMeta = frame_to_hdr10_metadata(src_frame, meta);
+
+        if (ffplay_gpu_ensure_processor(is->gpu, vp->width, vp->height,
+                                        inCs, hasMeta ? &meta : nullptr) == 0)
             vp->tex = ffplay_gpu_nv12_to_bgra(is->gpu, nv12, slice);
     }
     vp->version = vp->tex ? ++(*is->frame_version_seq) : 0;
