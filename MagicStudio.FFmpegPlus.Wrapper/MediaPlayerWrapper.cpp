@@ -112,6 +112,10 @@ IntPtr FFplayPlayer::TryAcquireCurrentTexture(UInt64% version, int% width, int% 
     return IntPtr(tex);
 }
 
+UInt64 FFplayPlayer::PeekFrameVersion() {
+    return _handle ? static_cast<UInt64>(magic_ffplay_current_frame_version(HF(_handle))) : 0;
+}
+
 int FFplayPlayer::VideoWidth::get()  { int w=0,h=0; return _handle && magic_ffplay_video_size(HF(_handle),&w,&h) ? w : 0; }
 int FFplayPlayer::VideoHeight::get() { int w=0,h=0; return _handle && magic_ffplay_video_size(HF(_handle),&w,&h) ? h : 0; }
 double FFplayPlayer::Duration::get() { return _handle ? magic_ffplay_duration_seconds(HF(_handle)) : 0; }

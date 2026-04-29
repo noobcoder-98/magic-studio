@@ -21,7 +21,8 @@
       "Bash(xxd)",
       "PowerShell(dotnet build *)",
       "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb MagicStudio.slnx /p:Configuration=Debug /p:Platform=x64 /v:minimal /m /nologo 2>&1 | Select-String -Pattern \"error|FAILED|Build succeeded\" | Select-Object -First 20)",
-      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb MagicStudio.UI/MagicStudio.UI.csproj /p:Configuration=Debug /p:Platform=x64 /v:minimal /m /nologo 2>&1 | Select-Object -Last 30)"
+      "PowerShell($msb = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\"; & $msb MagicStudio.UI/MagicStudio.UI.csproj /p:Configuration=Debug /p:Platform=x64 /v:minimal /m /nologo 2>&1 | Select-Object -Last 30)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" -nologo -m -p:Configuration=Debug -p:Platform=x64 MagicStudio.slnx)"
     ]
   }
 }

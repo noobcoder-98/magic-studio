@@ -74,6 +74,13 @@ public:
                                     [Out] int%    width,
                                     [Out] int%    height);
 
+    /// <summary>
+    /// Returns the current frame version without acquiring a texture reference.
+    /// Cheap atomic load — safe to call from a UI-thread polling timer to
+    /// detect when a new frame is ready.  Returns 0 if no frame yet.
+    /// </summary>
+    UInt64 PeekFrameVersion();
+
     property int    VideoWidth  { int    get(); }
     property int    VideoHeight { int    get(); }
     property double Duration    { double get(); }

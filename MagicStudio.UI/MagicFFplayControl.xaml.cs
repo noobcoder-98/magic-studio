@@ -22,12 +22,21 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
     private static readonly Guid IID_IDXGISurface =
         new("CAFCB56C-6AC3-4889-BF47-9E23BBD260EC");
 
+    // Cap presentation polling at 60Hz so we don't repaint on every vsync of a
+    // 120/144Hz monitor when the video is 24/30/60 fps.  The Draw handler no
+    // longer self-invalidates -- this timer drives invalidation, but only when
+    // the player's frame version has actually advanced.
+    private static readonly TimeSpan PresentationInterval =
+        TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
+
     private FFplayPlayer?  _player;
     private CanvasDevice?  _canvasDevice;
     private CanvasBitmap?  _frameBitmap;
     private ulong          _lastVersion;
     private bool           _playing;
     private bool           _disposed;
+
+    private DispatcherTimer? _presentTimer;
 
     private bool   _suppressSlider;
     private bool   _sliderDragging;
@@ -37,6 +46,9 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
     {
         InitializeComponent();
         Unloaded += OnUnloaded;
+
+        _presentTimer = new DispatcherTimer { Interval = PresentationInterval };
+        _presentTimer.Tick += OnPresentTimerTick;
     }
 
     // -------------------------------------------------------------------------
@@ -78,6 +90,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         _player.Play();
         _playing = true;
         FfPlayPauseButton.Content = ""; // Pause glyph
+        _presentTimer?.Start();
         FFplayCanvas.Invalidate();
     }
 
@@ -86,6 +99,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         _player?.Pause();
         _playing = false;
         FfPlayPauseButton.Content = ""; // Play glyph
+        _presentTimer?.Stop();
         FFplayCanvas.Invalidate();
     }
 
@@ -129,9 +143,16 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
                 _frameBitmap,
                 new Rect(0, 0, sender.ActualWidth, sender.ActualHeight));
         }
+    }
 
-        if (_playing)
-            sender.Invalidate();
+    // Polled at PresentationInterval (60Hz).  Only invalidates the canvas when
+    // the player has produced a new frame -- so a 24fps video drives ~24
+    // repaints/s instead of 120/144 on a high-refresh monitor.
+    private void OnPresentTimerTick(object? sender, object e)
+    {
+        if (!_playing || _player is null) return;
+        if (_player.PeekFrameVersion() != _lastVersion)
+            FFplayCanvas.Invalidate();
     }
 
     // -------------------------------------------------------------------------
@@ -173,6 +194,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         _player.Seek(seconds);
         _playing = true;
         FfPlayPauseButton.Content = ""; // Pause glyph
+        _presentTimer?.Start();
         FFplayCanvas.Invalidate();
     }
 
@@ -281,6 +303,13 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+
+        if (_presentTimer is not null)
+        {
+            _presentTimer.Stop();
+            _presentTimer.Tick -= OnPresentTimerTick;
+            _presentTimer = null;
+        }
 
         _frameBitmap?.Dispose();
         _frameBitmap = null;

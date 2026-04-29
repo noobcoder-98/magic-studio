@@ -40,6 +40,13 @@ public sealed class FFplayPlayer : IDisposable
     public IntPtr TryAcquireCurrentTexture(out ulong version, out int width, out int height)
         => _impl.TryAcquireCurrentTexture(out version, out width, out height);
 
+    /// <summary>
+    /// Cheap atomic load of the current frame version, with no texture AddRef.
+    /// Use this to detect new frames from a UI-thread polling timer without
+    /// the cost of wrapping a CanvasBitmap on every tick.
+    /// </summary>
+    public ulong PeekFrameVersion() => _impl.PeekFrameVersion();
+
     public int    VideoWidth  => _impl.VideoWidth;
     public int    VideoHeight => _impl.VideoHeight;
     public double Duration    => _impl.Duration;
