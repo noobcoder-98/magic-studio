@@ -238,6 +238,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         finally
         {
             (d3dSurface as IDisposable)?.Dispose();
+            if (surfacePtr != IntPtr.Zero)
             Marshal.Release(surfacePtr);
         }
     }
