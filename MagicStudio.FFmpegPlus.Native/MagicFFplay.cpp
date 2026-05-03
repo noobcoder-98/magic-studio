@@ -1185,14 +1185,14 @@ static int get_video_frame(VideoState* is, AVFrame* frame) {
     // skip_frame: NV12→BGRA conversion is now lazy (display path only), so the
     //   decode thread is no longer bottlenecked by VideoProcessor.  GPU-only H.264
     //   decode typically exceeds 500fps, comfortably covering x10 (300fps needed).
-    //   AVDISCARD_NONKEY is only required at extreme speeds where raw GPU decode
-    //   itself becomes the limit (above ~16x for typical 1080p content).
+    //   AVDISCARD_NONREF (skip non-reference B-frames only) at > 30x keeps I+P
+    //   frames (~15fps cadence) so playback stays visually continuous at high speed.
     {
         const double spd = is->playback_speed;
         is->viddec.avctx->skip_loop_filter =
             (spd > 2.0) ? AVDISCARD_ALL : AVDISCARD_DEFAULT;
         is->viddec.avctx->skip_frame =
-            (spd > 30.0) ? AVDISCARD_NONKEY : AVDISCARD_DEFAULT;
+            (spd > 30.0) ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
     }
 
     int got = decoder_decode_frame(&is->viddec, frame);
