@@ -167,7 +167,7 @@ public sealed partial class MediaPlayerControl : UserControl, IDisposable
         if (_player is null) return;
         _player.Seek(seconds);
         _playing = true;
-        PlayPauseButton.Content = ""; // Pause glyph
+        PlayPauseButton.Content = "\uE769"; // Pause glyph
         VideoCanvas.Invalidate();
     }
 

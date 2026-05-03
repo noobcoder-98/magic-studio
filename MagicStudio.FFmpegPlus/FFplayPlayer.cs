@@ -51,6 +51,21 @@ public sealed class FFplayPlayer : IDisposable
     public int    VideoHeight => _impl.VideoHeight;
     public double Duration    => _impl.Duration;
 
+    /// <summary>Playback speed [0.1, 100.0]. Default 1.0.</summary>
+    public double Speed {
+        get => _impl.GetSpeed();
+        set => _impl.SetSpeed(value);
+    }
+
+    /// <summary>
+    /// Pitch correction: true = atempo (pitch preserved); false = tape-like.
+    /// Forced true when Speed >= 5.0 regardless of this value.
+    /// </summary>
+    public bool PitchCorrection {
+        get => _impl.GetPitchCorrection();
+        set => _impl.SetPitchCorrection(value);
+    }
+
     public void Dispose()
     {
         if (_disposed) return;

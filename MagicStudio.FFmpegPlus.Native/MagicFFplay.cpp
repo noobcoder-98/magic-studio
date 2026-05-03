@@ -60,6 +60,9 @@ extern "C" {
 #include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h"
 #include "libswresample/swresample.h"
+#include "libavfilter/avfilter.h"
+#include "libavfilter/buffersink.h"
+#include "libavfilter/buffersrc.h"
 }
 
 #include <SDL2/SDL.h>
@@ -67,9 +70,11 @@ extern "C" {
 
 #include <atomic>
 #include <mutex>
+#include <string>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "avfilter.lib")
 
 using Microsoft::WRL::ComPtr;
 
@@ -99,7 +104,7 @@ using Microsoft::WRL::ComPtr;
 #define AUDIO_DIFF_AVG_NB               20
 #define REFRESH_RATE                    0.01
 
-#define VIDEO_PICTURE_QUEUE_SIZE        3
+#define VIDEO_PICTURE_QUEUE_SIZE        16
 #define SAMPLE_QUEUE_SIZE               9
 #define FRAME_QUEUE_SIZE                FFMAX(SAMPLE_QUEUE_SIZE, VIDEO_PICTURE_QUEUE_SIZE)
 
@@ -516,6 +521,23 @@ struct VideoState {
     // texture is parked in pictq.  The UI compares against its last-seen
     // value to avoid redundant CanvasBitmap wrapping.
     std::atomic<uint64_t>* frame_version_seq;
+
+    // ---- Playback speed & audio filter (libavfilter atempo) ----
+    double            playback_speed;    // [0.1, 100.0], default 1.0
+    bool              pitch_correction;  // true = atempo (preserve pitch);
+                                         // false = asetrate+aresample (tape-like)
+    std::atomic<int>* speed_changed;     // 1 = rebuild filter on next callback
+    // Target-PTS clock: video frame selection at speed != 1.0 uses
+    // target_pts = speed_base_pts + wall_elapsed * playback_speed
+    // instead of audio-master A/V sync, which breaks at high speeds.
+    double            speed_base_pts;      // timeline PTS snapshot
+    int64_t           speed_base_wall_us;  // av_gettime_relative() snapshot
+
+    // avfilter graph: abuffer → atempo/asetrate chain → abuffersink
+    AVFilterGraph*    af_graph;
+    AVFilterContext*  af_src;            // abuffer
+    AVFilterContext*  af_sink;           // abuffersink
+    int               af_serial;         // last audioq serial pushed into graph
 };
 
 // File-scope tunables (analogous to the static globals in ffplay.c).
@@ -995,8 +1017,14 @@ retry:
         goto retry;
     }
 
-    if (lastvp->serial != vp->serial)
+    if (lastvp->serial != vp->serial) {
         is->frame_timer = av_gettime_relative() / 1000000.0;
+        // Re-anchor speed clock to first frame after a seek/serial change.
+        if (is->playback_speed != 1.0) {
+            is->speed_base_pts     = isnan(vp->pts) ? 0.0 : vp->pts;
+            is->speed_base_wall_us = av_gettime_relative();
+        }
+    }
 
     double last_duration;
     double delay;
@@ -1004,6 +1032,54 @@ retry:
 
     if (is->paused) goto display;
 
+    // -----------------------------------------------------------------------
+    // Speed != 1.0: target-PTS clock drives frame selection.
+    // Compute target_pts = snapshot_pts + elapsed_wall * speed, then advance
+    // pictq until the current frame's PTS reaches that target.  This is the
+    // same strategy used by professional editors (Premiere/CapCut): pick the
+    // frame at the right timeline position, don't fight audio-master A/V sync.
+    // -----------------------------------------------------------------------
+    if (is->playback_speed != 1.0) {
+        double wall_elapsed = (av_gettime_relative() - is->speed_base_wall_us) / 1e6;
+        double target_pts   = is->speed_base_pts + wall_elapsed * is->playback_speed;
+
+        for (;;) {
+            if (vp->serial != is->videoq.serial) {
+                frame_queue_next(&is->pictq);
+                is->force_refresh = 1;
+                if (frame_queue_nb_remaining(&is->pictq) == 0) goto display;
+                vp = frame_queue_peek(&is->pictq);
+                continue;
+            }
+
+            // If there is a NEXT frame that is still at-or-before target_pts,
+            // skip the current vp in favour of a closer frame.
+            if (frame_queue_nb_remaining(&is->pictq) > 1) {
+                Frame* nextvp = frame_queue_peek_next(&is->pictq);
+                if (nextvp->serial == is->videoq.serial && nextvp->pts <= target_pts) {
+                    frame_queue_next(&is->pictq);
+                    is->force_refresh = 1;
+                    vp = frame_queue_peek(&is->pictq);
+                    continue;
+                }
+            }
+
+            // vp is the best frame: show it if its PTS has been reached.
+            if (!isnan(vp->pts) && vp->pts <= target_pts) {
+                frame_queue_next(&is->pictq);   // mark vp as shown (becomes peek_last)
+                is->force_refresh = 1;
+                SDL_LockMutex(is->pictq.mutex);
+                update_video_pts(is, vp->pts, vp->serial);
+                SDL_UnlockMutex(is->pictq.mutex);
+            }
+            break;
+        }
+        goto display;
+    }
+
+    // -----------------------------------------------------------------------
+    // Speed == 1.0: standard audio-master A/V sync (original ffplay logic).
+    // -----------------------------------------------------------------------
     last_duration = vp_duration(is, lastvp, vp);
     delay         = compute_target_delay(last_duration, is);
 
@@ -1014,7 +1090,7 @@ retry:
     }
 
     is->frame_timer += delay;
-    if (delay > 0 && time - is->frame_timer > AV_SYNC_THRESHOLD_MAX)
+    if (time - is->frame_timer > AV_SYNC_THRESHOLD_MAX)
         is->frame_timer = time;
 
     SDL_LockMutex(is->pictq.mutex);
@@ -1041,8 +1117,28 @@ retry:
         stream_toggle_pause(is);
 
 display:
-    if (is->force_refresh && is->pictq.rindex_shown)
+    if (is->force_refresh && is->pictq.rindex_shown) {
+        // Lazy NV12→BGRA conversion: only the frame that is actually about to
+        // be shown pays the VideoProcessor cost.  Skipped frames (fast-forward)
+        // never reach here, so their GPU conversion is avoided entirely.
+        Frame* fp = frame_queue_peek_last(&is->pictq);
+        if (fp->tex == nullptr && fp->frame->format == AV_PIX_FMT_D3D11) {
+            auto* nv12  = reinterpret_cast<ID3D11Texture2D*>(fp->frame->data[0]);
+            UINT  slice = (UINT)(intptr_t)fp->frame->data[1];
+            DXGI_COLOR_SPACE_TYPE inCs = frame_to_dxgi_color_space(fp->frame);
+            DXGI_HDR_METADATA_HDR10 meta = {};
+            const bool hasMeta = frame_to_hdr10_metadata(fp->frame, meta);
+            ID3D11Texture2D* bgra = nullptr;
+            if (ffplay_gpu_ensure_processor(is->gpu, fp->width, fp->height,
+                                            inCs, hasMeta ? &meta : nullptr) == 0)
+                bgra = ffplay_gpu_nv12_to_bgra(is->gpu, nv12, slice);
+            SDL_LockMutex(is->pictq.mutex);
+            fp->tex     = bgra;
+            fp->version = bgra ? ++(*is->frame_version_seq) : 0;
+            SDL_UnlockMutex(is->pictq.mutex);
+        }
         is->force_refresh = 0;
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -1063,6 +1159,7 @@ static int queue_picture(VideoState* is, AVFrame* src_frame,
     vp->pos      = pos;
     vp->serial   = serial;
 
+    // Release the BGRA tex from the previous occupant of this slot.
     if (vp->tex) {
         SDL_LockMutex(is->pictq.mutex);
         vp->tex->Release();
@@ -1070,19 +1167,12 @@ static int queue_picture(VideoState* is, AVFrame* src_frame,
         SDL_UnlockMutex(is->pictq.mutex);
     }
 
-    if (src_frame->format == AV_PIX_FMT_D3D11) {
-        auto* nv12  = reinterpret_cast<ID3D11Texture2D*>(src_frame->data[0]);
-        UINT  slice = (UINT)(intptr_t)src_frame->data[1];
-
-        DXGI_COLOR_SPACE_TYPE inCs = frame_to_dxgi_color_space(src_frame);
-        DXGI_HDR_METADATA_HDR10 meta = {};
-        const bool hasMeta = frame_to_hdr10_metadata(src_frame, meta);
-
-        if (ffplay_gpu_ensure_processor(is->gpu, vp->width, vp->height,
-                                        inCs, hasMeta ? &meta : nullptr) == 0)
-            vp->tex = ffplay_gpu_nv12_to_bgra(is->gpu, nv12, slice);
-    }
-    vp->version = vp->tex ? ++(*is->frame_version_seq) : 0;
+    // NV12→BGRA conversion is deferred to video_refresh (display section).
+    // Frames that are skipped during fast-forward never reach the display path,
+    // so their VideoProcessor cost is eliminated entirely.  The raw NV12 data
+    // stays live in vp->frame until frame_queue_unref_item releases it.
+    vp->tex     = nullptr;
+    vp->version = 0;
 
     av_frame_move_ref(vp->frame, src_frame);
     frame_queue_push(&is->pictq);
@@ -1090,6 +1180,21 @@ static int queue_picture(VideoState* is, AVFrame* src_frame,
 }
 
 static int get_video_frame(VideoState* is, AVFrame* frame) {
+    // Scale decoder effort with playback speed to reduce CPU usage.
+    // skip_loop_filter: skip deblocking at > 2x (saves ~30% decode time).
+    // skip_frame: NV12→BGRA conversion is now lazy (display path only), so the
+    //   decode thread is no longer bottlenecked by VideoProcessor.  GPU-only H.264
+    //   decode typically exceeds 500fps, comfortably covering x10 (300fps needed).
+    //   AVDISCARD_NONKEY is only required at extreme speeds where raw GPU decode
+    //   itself becomes the limit (above ~16x for typical 1080p content).
+    {
+        const double spd = is->playback_speed;
+        is->viddec.avctx->skip_loop_filter =
+            (spd > 2.0) ? AVDISCARD_ALL : AVDISCARD_DEFAULT;
+        is->viddec.avctx->skip_frame =
+            (spd > 30.0) ? AVDISCARD_NONKEY : AVDISCARD_DEFAULT;
+    }
+
     int got = decoder_decode_frame(&is->viddec, frame);
     if (got < 0) return -1;
     if (!got)    return 0;
@@ -1100,7 +1205,11 @@ static int get_video_frame(VideoState* is, AVFrame* frame) {
 
     frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
 
-    if (s_framedrop > 0 || (s_framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
+    // At speed != 1.0 the target-PTS selection in video_refresh handles frame
+    // dropping.  Don't also drop here against an audio clock that advances Nx
+    // faster than real time — that would starve pictq of every non-I-frame.
+    if (is->playback_speed == 1.0 &&
+        (s_framedrop > 0 || (s_framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER))) {
         if (frame->pts != AV_NOPTS_VALUE) {
             double diff = dpts - get_master_clock(is);
             if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD &&
@@ -1174,6 +1283,235 @@ static int audio_thread(void* arg) {
     return ret;
 }
 
+// ----------------------------------------------------------------------------
+// Audio filter graph (libavfilter atempo time-stretching).
+// ----------------------------------------------------------------------------
+
+// Build a filter-chain string for [speed] using atempo (range 0.5–100.0).
+// For speed < 0.5 chain multiple atempo=0.5 stages until the remainder fits.
+static std::string build_atempo_chain(double speed) {
+    std::string chain;
+    double rem = speed;
+    while (rem < 0.5 - 1e-9) {
+        chain += "atempo=0.5,";
+        rem /= 0.5;
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "atempo=%.6f", rem);
+    chain += buf;
+    return chain;
+}
+
+static void audio_filter_teardown(VideoState* is) {
+    avfilter_graph_free(&is->af_graph);
+    is->af_src  = nullptr;
+    is->af_sink = nullptr;
+}
+
+// Build the avfilter graph for the current playback_speed / pitch_correction.
+// ref supplies the decoded-frame format so abuffer can be configured correctly.
+// pitch_correction is forced ON when speed >= 5.0 regardless of the flag.
+static int audio_filter_init(VideoState* is, const AVFrame* ref) {
+    const AVFilter* abuffersrc  = avfilter_get_by_name("abuffer");
+    const AVFilter* abuffersink = avfilter_get_by_name("abuffersink");
+    if (!abuffersrc || !abuffersink) return AVERROR(ENOSYS);
+
+    AVFilterGraph* graph = avfilter_graph_alloc();
+    if (!graph) return AVERROR(ENOMEM);
+
+    const double speed    = is->playback_speed;
+    const bool   pitch_on = is->pitch_correction || (speed >= 5.0);
+
+    // Middle filter string (between abuffer and abuffersink).
+    std::string filter_str;
+    if (pitch_on) {
+        filter_str = build_atempo_chain(speed);
+    } else {
+        // Tape-like: pretend the samples are at rate*speed, then resample back.
+        // Effect: tempo and pitch both change proportionally (like a cassette).
+        char buf[128];
+        snprintf(buf, sizeof(buf), "asetrate=%d,aresample=%d",
+                 (int)(ref->sample_rate * speed + 0.5), ref->sample_rate);
+        filter_str = buf;
+    }
+
+    // abuffer source args.
+    char ch_layout_str[64] = {};
+    av_channel_layout_describe(&ref->ch_layout, ch_layout_str, sizeof(ch_layout_str));
+    char src_args[256];
+    snprintf(src_args, sizeof(src_args),
+             "sample_rate=%d:sample_fmt=%s:channel_layout=%s:time_base=1/%d",
+             ref->sample_rate,
+             av_get_sample_fmt_name((AVSampleFormat)ref->format),
+             ch_layout_str,
+             ref->sample_rate);
+
+    AVFilterContext* src_ctx  = nullptr;
+    AVFilterContext* sink_ctx = nullptr;
+    int ret;
+
+    ret = avfilter_graph_create_filter(&src_ctx,  abuffersrc,  "in",
+                                       src_args, nullptr, graph);
+    if (ret < 0) goto fail;
+    ret = avfilter_graph_create_filter(&sink_ctx, abuffersink, "out",
+                                       nullptr, nullptr, graph);
+    if (ret < 0) goto fail;
+
+    {
+        // outputs = the SOURCE side of the parsed chain (feeds data IN).
+        // inputs  = the SINK   side of the parsed chain (receives data OUT).
+        AVFilterInOut* outputs = avfilter_inout_alloc();
+        AVFilterInOut* inputs  = avfilter_inout_alloc();
+        if (!outputs || !inputs) {
+            avfilter_inout_free(&outputs);
+            avfilter_inout_free(&inputs);
+            ret = AVERROR(ENOMEM);
+            goto fail;
+        }
+        outputs->name       = av_strdup("in");
+        outputs->filter_ctx = src_ctx;
+        outputs->pad_idx    = 0;
+        outputs->next       = nullptr;
+
+        inputs->name        = av_strdup("out");
+        inputs->filter_ctx  = sink_ctx;
+        inputs->pad_idx     = 0;
+        inputs->next        = nullptr;
+
+        ret = avfilter_graph_parse_ptr(graph, filter_str.c_str(),
+                                       &inputs, &outputs, nullptr);
+        avfilter_inout_free(&outputs);
+        avfilter_inout_free(&inputs);
+        if (ret < 0) goto fail;
+    }
+
+    ret = avfilter_graph_config(graph, nullptr);
+    if (ret < 0) goto fail;
+
+    is->af_graph = graph;
+    is->af_src   = src_ctx;
+    is->af_sink  = sink_ctx;
+    return 0;
+
+fail:
+    avfilter_graph_free(&graph);
+    return ret;
+}
+
+// Feed raw decoded frames into the filter graph and return one S16 output
+// buffer.  Called from audio_decode_frame when playback_speed != 1.0.
+// The inner loop reads from sampq until the filter produces output.
+static int audio_decode_frame_filtered(VideoState* is) {
+    AVFrame* filt = av_frame_alloc();
+    if (!filt) return AVERROR(ENOMEM);
+
+    for (;;) {
+        // 1. Try to pull a filtered frame from the graph.
+        int ret = is->af_graph ? av_buffersink_get_frame(is->af_sink, filt)
+                               : AVERROR(EAGAIN);
+
+        if (ret >= 0) {
+            // ---- Filtered output available ----
+            AVRational tb = av_buffersink_get_time_base(is->af_sink);
+            // atempo/asetrate output PTS is in output-time coordinates.
+            // Scale by playback_speed to convert to original-timeline coordinates
+            // so audclk stays in sync with vidclk (which uses original PTS).
+            if (filt->pts != AV_NOPTS_VALUE) {
+                const double spd = is->playback_speed;
+                is->audio_clock = filt->pts * av_q2d(tb) * spd
+                                + (double)filt->nb_samples / filt->sample_rate * spd;
+            } else {
+                is->audio_clock = NAN;
+            }
+            is->audio_clock_serial = is->af_serial;
+
+            // Re-init swr if the filtered-frame format differs from last time.
+            const bool fmt_changed =
+                !is->swr_ctx
+                || filt->format      != is->audio_src.fmt
+                || filt->sample_rate != is->audio_src.freq
+                || av_channel_layout_compare(&filt->ch_layout,
+                                             &is->audio_src.ch_layout);
+            if (fmt_changed) {
+                swr_free(&is->swr_ctx);
+                if (swr_alloc_set_opts2(&is->swr_ctx,
+                        &is->audio_tgt.ch_layout, is->audio_tgt.fmt,
+                        is->audio_tgt.freq,
+                        &filt->ch_layout, (AVSampleFormat)filt->format,
+                        filt->sample_rate, 0, nullptr) < 0
+                    || swr_init(is->swr_ctx) < 0) {
+                    swr_free(&is->swr_ctx);
+                    av_frame_free(&filt);
+                    return -1;
+                }
+                av_channel_layout_copy(&is->audio_src.ch_layout, &filt->ch_layout);
+                is->audio_src.freq = filt->sample_rate;
+                is->audio_src.fmt  = (AVSampleFormat)filt->format;
+            }
+
+            int out_count = filt->nb_samples + 256;
+            int out_size  = av_samples_get_buffer_size(nullptr,
+                is->audio_tgt.ch_layout.nb_channels, out_count,
+                is->audio_tgt.fmt, 0);
+            if (out_size < 0) { av_frame_free(&filt); return -1; }
+
+            av_fast_malloc(&is->audio_buf1, &is->audio_buf1_size,
+                           (size_t)out_size);
+            if (!is->audio_buf1) { av_frame_free(&filt); return AVERROR(ENOMEM); }
+
+            int len2 = swr_convert(is->swr_ctx, &is->audio_buf1, out_count,
+                                   (const uint8_t**)filt->extended_data,
+                                   filt->nb_samples);
+            av_frame_free(&filt);
+            if (len2 < 0) return -1;
+
+            is->audio_buf = is->audio_buf1;
+            return len2 * is->audio_tgt.ch_layout.nb_channels
+                        * av_get_bytes_per_sample(is->audio_tgt.fmt);
+        }
+
+        if (ret != AVERROR(EAGAIN)) { av_frame_free(&filt); return -1; }
+
+        // 2. Filter needs more input — read the next raw frame from sampq.
+        Frame* af;
+        do {
+#if defined(_WIN32)
+            while (frame_queue_nb_remaining(&is->sampq) == 0) {
+                if ((av_gettime_relative() - is->audio_callback_time) >
+                    1000000LL * is->audio_hw_buf_size / is->audio_tgt.bytes_per_sec)
+                { av_frame_free(&filt); return -1; }
+                av_usleep(1000);
+            }
+#endif
+            af = frame_queue_peek_readable(&is->sampq);
+            if (!af) { av_frame_free(&filt); return -1; }
+            frame_queue_next(&is->sampq);
+        } while (af->serial != is->audioq.serial);
+
+        // 3. Serial mismatch after seek — rebuild filter for the new segment.
+        if (af->serial != is->af_serial) {
+            audio_filter_teardown(is);
+            is->af_serial = af->serial;
+        }
+
+        // 4. Lazy init: build the graph on the first frame (format now known).
+        if (!is->af_graph) {
+            if (audio_filter_init(is, af->frame) < 0) {
+                av_frame_free(&filt);
+                return -1;
+            }
+        }
+
+        // 5. Push the raw frame into the filter.
+        //    KEEP_REF: the filter takes its own reference; sampq keeps ownership.
+        if (av_buffersrc_add_frame_flags(is->af_src, af->frame,
+                                         AV_BUFFERSRC_FLAG_KEEP_REF) < 0) {
+            av_frame_free(&filt);
+            return -1;
+        }
+    }
+}
+
 static int synchronize_audio(VideoState* is, int nb_samples) {
     int wanted = nb_samples;
 
@@ -1202,6 +1540,15 @@ static int synchronize_audio(VideoState* is, int nb_samples) {
 
 static int audio_decode_frame(VideoState* is) {
     if (is->paused) return -1;
+
+    // Tear down the filter graph when speed or pitch_correction changed.
+    // The filtered path rebuilds it lazily on the next frame.
+    if (is->speed_changed->exchange(0))
+        audio_filter_teardown(is);
+
+    // Delegate to the filter path whenever speed != 1.0.
+    if (is->playback_speed != 1.0)
+        return audio_decode_frame_filtered(is);
 
     Frame* af;
     do {
@@ -1313,9 +1660,12 @@ static void sdl_audio_callback(void* opaque, Uint8* stream, int len) {
     is->audio_write_buf_size = (int)is->audio_buf_size - is->audio_buf_index;
 
     if (!isnan(is->audio_clock)) {
+        // Buffer compensation must be scaled by playback_speed: each byte in the
+        // SDL audio buffer represents speed-times more original-timeline content.
+        const double spd = is->playback_speed;
         set_clock_at(&is->audclk,
             is->audio_clock - (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) /
-                              is->audio_tgt.bytes_per_sec,
+                              is->audio_tgt.bytes_per_sec * spd,
             is->audio_clock_serial,
             is->audio_callback_time / 1000000.0);
         sync_clock_to_slave(&is->extclk, &is->audclk);
@@ -1515,6 +1865,7 @@ static void stream_component_close(VideoState* is, int stream_index) {
         decoder_abort(&is->auddec, &is->sampq);
         SDL_CloseAudioDevice(is->audio_dev);
         decoder_destroy(&is->auddec);
+        audio_filter_teardown(is);
         swr_free(&is->swr_ctx);
         av_freep(&is->audio_buf1);
         is->audio_buf1_size = 0;
@@ -1728,6 +2079,8 @@ static void stream_close(VideoState* is) {
     if (is->prep_mutex) SDL_DestroyMutex(is->prep_mutex);
 
     av_free(is->filename);
+    audio_filter_teardown(is);
+    delete is->speed_changed;
     delete is->gpu;
     delete is->frame_version_seq;
     av_free(is);
@@ -1761,6 +2114,16 @@ static VideoState* stream_open(const char* filename) {
     is->audio_volume       = SDL_MIX_MAXVOLUME;
     is->muted              = 0;
     is->av_sync_type       = s_av_sync_type;
+
+    is->playback_speed      = 1.0;
+    is->pitch_correction    = true;
+    is->speed_changed       = new std::atomic<int>(0);
+    is->speed_base_pts      = 0.0;
+    is->speed_base_wall_us  = av_gettime_relative();
+    is->af_graph          = nullptr;
+    is->af_src            = nullptr;
+    is->af_sink           = nullptr;
+    is->af_serial         = -1;
 
     is->read_tid    = SDL_CreateThread(read_thread,    "ffplay_read",    is);
     is->refresh_tid = SDL_CreateThread(refresh_thread, "ffplay_refresh", is);
@@ -1933,6 +2296,33 @@ int magic_ffplay_copy_current_bgra(MagicFFplayHandle* h,
     *out_w = w;
     *out_h = hh;
     return 1;
+}
+
+void magic_ffplay_set_speed(MagicFFplayHandle* h, double speed) {
+    if (!h || !h->is) return;
+    double cur = get_master_clock(h->is);
+    h->is->speed_base_pts     = isnan(cur) ? 0.0 : cur;
+    h->is->speed_base_wall_us = av_gettime_relative();
+    h->is->playback_speed     = av_clipd(speed, 0.1, 100.0);
+    h->is->speed_changed->store(1);
+    // Wake the read thread so it refills queues immediately at the new rate.
+    SDL_CondSignal(h->is->continue_read_thread);
+}
+
+double magic_ffplay_get_speed(MagicFFplayHandle* h) {
+    return (h && h->is) ? h->is->playback_speed : 1.0;
+}
+
+// enabled: 1 = preserve pitch (atempo); 0 = tape-like pitch shift (asetrate).
+// At speed >= 5.0 pitch correction is always on regardless of this flag.
+void magic_ffplay_set_pitch_correction(MagicFFplayHandle* h, int enabled) {
+    if (!h || !h->is) return;
+    h->is->pitch_correction = (enabled != 0);
+    h->is->speed_changed->store(1);
+}
+
+int magic_ffplay_get_pitch_correction(MagicFFplayHandle* h) {
+    return (h && h->is) ? (h->is->pitch_correction ? 1 : 0) : 1;
 }
 
 // Returns the AddRef'd IDXGIDevice* of this handle's own D3D11 device.

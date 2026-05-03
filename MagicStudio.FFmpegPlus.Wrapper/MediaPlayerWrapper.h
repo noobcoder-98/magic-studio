@@ -85,6 +85,15 @@ public:
     property int    VideoHeight { int    get(); }
     property double Duration    { double get(); }
 
+    // Playback speed [0.1, 100.0].
+    void   SetSpeed(double speed);
+    double GetSpeed();
+
+    // Pitch correction: true = atempo (preserve pitch); false = tape-like.
+    // Forced ON at speed >= 5.0.
+    void SetPitchCorrection(bool enabled);
+    bool GetPitchCorrection();
+
 private:
     void* _handle;
 };

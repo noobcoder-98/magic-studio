@@ -22,12 +22,15 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
     private static readonly Guid IID_IDXGISurface =
         new("CAFCB56C-6AC3-4889-BF47-9E23BBD260EC");
 
-    // Cap presentation polling at 60Hz so we don't repaint on every vsync of a
-    // 120/144Hz monitor when the video is 24/30/60 fps.  The Draw handler no
-    // longer self-invalidates -- this timer drives invalidation, but only when
-    // the player's frame version has actually advanced.
-    private static readonly TimeSpan PresentationInterval =
-        TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 60);
+    // Presentation polling rate varies with playback speed (tiers match the
+    // decode strategy in get_video_frame on the C++ side):
+    //   ≤  1x →  60 Hz : standard rate for normal/slow playback
+    //   ≤ 15x → 100 Hz : full-decode path; C++ video_refresh fires at 100 Hz
+    //                    (REFRESH_RATE = 10 ms) — match it to catch every frame
+    //   > 15x →  30 Hz : AVDISCARD_NONKEY; I-frames are sparse (≤ ~33 fps
+    //                    even at ×100), so faster polling is wasted CPU
+    private static TimeSpan PresentationIntervalFor(double speed) => TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 30);
+        
 
     private FFplayPlayer?  _player;
     private CanvasDevice?  _canvasDevice;
@@ -42,12 +45,13 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
     private bool   _sliderDragging;
     private double _seekTargetSeconds;
 
+
     public MagicFFplayControl()
     {
         InitializeComponent();
         Unloaded += OnUnloaded;
 
-        _presentTimer = new DispatcherTimer { Interval = PresentationInterval };
+        _presentTimer = new DispatcherTimer { Interval = PresentationIntervalFor(1.0) };
         _presentTimer.Tick += OnPresentTimerTick;
     }
 
@@ -80,6 +84,13 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
             FfProgressSlider.Value   = 0;
             _suppressSlider = false;
             UpdateTimeLabel(0, duration);
+
+            // Reset speed to 1.0x and sync UI
+            _player.Speed = 10;
+            FfSpeedNumberBox.Value = 10;
+            UpdateSpeedUI(10);
+            if (_presentTimer is not null)
+                _presentTimer.Interval = PresentationIntervalFor(10);
         }
         return ok;
     }
@@ -145,9 +156,9 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         }
     }
 
-    // Polled at PresentationInterval (60Hz).  Only invalidates the canvas when
-    // the player has produced a new frame -- so a 24fps video drives ~24
-    // repaints/s instead of 120/144 on a high-refresh monitor.
+    // Polled at a speed-dependent rate.  Only invalidates the canvas when the
+    // player has produced a new frame -- so a 24fps video drives ~24 repaints/s
+    // at ×1, and fast-forward polling stays in sync with the decode cadence.
     private void OnPresentTimerTick(object? sender, object e)
     {
         if (!_playing || _player is null) return;
@@ -198,6 +209,33 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         FFplayCanvas.Invalidate();
     }
 
+    private void FfSetSpeedButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_player is null) return;
+        double speed = Math.Clamp(FfSpeedNumberBox.Value, 0.1, 100.0);
+        _player.Speed = speed;
+        UpdateSpeedUI(speed);
+        if (_presentTimer is not null)
+            _presentTimer.Interval = PresentationIntervalFor(speed);
+    }
+
+    private void FfPitchButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_player is null) return;
+        _player.PitchCorrection = FfPitchButton.IsChecked == true;
+    }
+
+    private void UpdateSpeedUI(double speed)
+    {
+        bool forced = speed >= 5.0;
+        FfPitchForcedText.Visibility = forced
+            ? Microsoft.UI.Xaml.Visibility.Visible
+            : Microsoft.UI.Xaml.Visibility.Collapsed;
+        FfPitchButton.IsEnabled = !forced;
+        if (forced)
+            FfPitchButton.IsChecked = true;
+    }
+
     // -------------------------------------------------------------------------
     // Win2D <-> native D3D11 device binding
     // -------------------------------------------------------------------------
@@ -228,17 +266,16 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
     {
         Guid iid = IID_IDXGISurface;
         int hr = Marshal.QueryInterface(texturePtr, ref iid, out IntPtr surfacePtr);
-        Marshal.ThrowExceptionForHR(hr);
         IDirect3DSurface? d3dSurface = null;
         try
         {
+            Marshal.ThrowExceptionForHR(hr);
             d3dSurface = CreateDirect3DSurfaceFromDxgi(surfacePtr);
             return CanvasBitmap.CreateFromDirect3D11Surface(rc, d3dSurface);
         }
         finally
         {
             (d3dSurface as IDisposable)?.Dispose();
-            if (surfacePtr != IntPtr.Zero)
             Marshal.Release(surfacePtr);
         }
     }

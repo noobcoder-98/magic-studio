@@ -120,4 +120,9 @@ int FFplayPlayer::VideoWidth::get()  { int w=0,h=0; return _handle && magic_ffpl
 int FFplayPlayer::VideoHeight::get() { int w=0,h=0; return _handle && magic_ffplay_video_size(HF(_handle),&w,&h) ? h : 0; }
 double FFplayPlayer::Duration::get() { return _handle ? magic_ffplay_duration_seconds(HF(_handle)) : 0; }
 
+void   FFplayPlayer::SetSpeed(double speed)         { if (_handle) magic_ffplay_set_speed(HF(_handle), speed); }
+double FFplayPlayer::GetSpeed()                     { return _handle ? magic_ffplay_get_speed(HF(_handle)) : 1.0; }
+void   FFplayPlayer::SetPitchCorrection(bool on)    { if (_handle) magic_ffplay_set_pitch_correction(HF(_handle), on ? 1 : 0); }
+bool   FFplayPlayer::GetPitchCorrection()           { return _handle ? magic_ffplay_get_pitch_correction(HF(_handle)) != 0 : true; }
+
 }}} // namespace MagicStudio::FFmpegPlus::Wrapper

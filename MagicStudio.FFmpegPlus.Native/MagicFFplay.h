@@ -52,6 +52,18 @@ int magic_ffplay_copy_current_bgra(MagicFFplayHandle* h,
 // host can build a CanvasDevice bound to the same GPU pipeline.
 int magic_ffplay_acquire_dxgi_device(MagicFFplayHandle* h, IDXGIDevice** out);
 
+// Playback speed [0.1, 100.0].  Default 1.0.
+// Rebuilds the audio filter graph asynchronously on the next SDL callback.
+void   magic_ffplay_set_speed           (MagicFFplayHandle* h, double speed);
+double magic_ffplay_get_speed           (MagicFFplayHandle* h);
+
+// Pitch correction (1 = on / 0 = off).  Default on.
+// When on:  atempo time-stretches audio preserving pitch.
+// When off: asetrate+aresample shifts pitch proportionally to speed (tape-like).
+// Ignored at speed >= 5.0 — pitch correction is always on above that threshold.
+void magic_ffplay_set_pitch_correction  (MagicFFplayHandle* h, int enabled);
+int  magic_ffplay_get_pitch_correction  (MagicFFplayHandle* h);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
