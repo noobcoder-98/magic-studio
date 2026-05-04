@@ -2,6 +2,7 @@ using MagicStudio.FFmpegPlus;
 using Microsoft.Graphics.Canvas;
 using Microsoft.Graphics.Canvas.UI;
 using Microsoft.Graphics.Canvas.UI.Xaml;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System;
@@ -16,43 +17,31 @@ namespace MagicStudio.UI;
 /// Video player control backed by MagicFFplay — the C++ port of ffplay.c.
 /// Uses its own Win2D CanvasControl (FFplayCanvas) and its own D3D11 device,
 /// so it runs independently from MediaPlayerControl for side-by-side comparison.
+/// Canvas invalidation is driven by FFplayPlayer.VideoFrameAvailable (push),
+/// eliminating the polling timer used previously.
 /// </summary>
 public sealed partial class MagicFFplayControl : UserControl, IDisposable
 {
     private static readonly Guid IID_IDXGISurface =
         new("CAFCB56C-6AC3-4889-BF47-9E23BBD260EC");
 
-    // Presentation polling rate varies with playback speed (tiers match the
-    // decode strategy in get_video_frame on the C++ side):
-    //   ≤  1x →  60 Hz : standard rate for normal/slow playback
-    //   ≤ 15x → 100 Hz : full-decode path; C++ video_refresh fires at 100 Hz
-    //                    (REFRESH_RATE = 10 ms) — match it to catch every frame
-    //   > 15x →  30 Hz : AVDISCARD_NONKEY; I-frames are sparse (≤ ~33 fps
-    //                    even at ×100), so faster polling is wasted CPU
-    private static TimeSpan PresentationIntervalFor(double speed) => TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 30);
-        
-
-    private FFplayPlayer?  _player;
-    private CanvasDevice?  _canvasDevice;
-    private CanvasBitmap?  _frameBitmap;
-    private ulong          _lastVersion;
-    private bool           _playing;
-    private bool           _disposed;
-
-    private DispatcherTimer? _presentTimer;
+    private FFplayPlayer?      _player;
+    private CanvasDevice?      _canvasDevice;
+    private CanvasBitmap?      _frameBitmap;
+    private ulong              _lastVersion;
+    private bool               _playing;
+    private bool               _disposed;
+    private DispatcherQueue?   _dispatcherQueue;
 
     private bool   _suppressSlider;
     private bool   _sliderDragging;
     private double _seekTargetSeconds;
 
-
     public MagicFFplayControl()
     {
         InitializeComponent();
+        _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
         Unloaded += OnUnloaded;
-
-        _presentTimer = new DispatcherTimer { Interval = PresentationIntervalFor(1.0) };
-        _presentTimer.Tick += OnPresentTimerTick;
     }
 
     // -------------------------------------------------------------------------
@@ -61,9 +50,10 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
 
     public bool Open(string path)
     {
-        // Release the previous frame and canvas device before closing the old
-        // player -- each FFplayPlayer owns its own D3D11 device, so the
-        // CanvasDevice must be rebound to the new device on every Open().
+        // Unsubscribe from the old player before disposing it.
+        if (_player is not null)
+            _player.VideoFrameAvailable -= OnPlayerFrameAvailable;
+
         _frameBitmap?.Dispose();
         _frameBitmap = null;
         _lastVersion = 0;
@@ -76,6 +66,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         bool ok = _player.Open(path);
         if (ok)
         {
+            _player.VideoFrameAvailable += OnPlayerFrameAvailable;
             BindCanvasDeviceToPlayer();
 
             double duration = _player.Duration;
@@ -89,8 +80,6 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
             _player.Speed = 10;
             FfSpeedNumberBox.Value = 10;
             UpdateSpeedUI(10);
-            if (_presentTimer is not null)
-                _presentTimer.Interval = PresentationIntervalFor(10);
         }
         return ok;
     }
@@ -101,7 +90,6 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         _player.Play();
         _playing = true;
         FfPlayPauseButton.Content = ""; // Pause glyph
-        _presentTimer?.Start();
         FFplayCanvas.Invalidate();
     }
 
@@ -110,8 +98,19 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         _player?.Pause();
         _playing = false;
         FfPlayPauseButton.Content = ""; // Play glyph
-        _presentTimer?.Stop();
         FFplayCanvas.Invalidate();
+    }
+
+    // -------------------------------------------------------------------------
+    // Frame-available handler (fires on the native refresh thread)
+    // -------------------------------------------------------------------------
+
+    private void OnPlayerFrameAvailable(object? sender, EventArgs e)
+    {
+        // Marshal to the UI thread; skip if not playing (paused/stopped).
+        if (!_playing) return;
+        _dispatcherQueue?.TryEnqueue(DispatcherQueuePriority.Normal,
+            () => { if (_playing) FFplayCanvas.Invalidate(); });
     }
 
     // -------------------------------------------------------------------------
@@ -156,16 +155,6 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         }
     }
 
-    // Polled at a speed-dependent rate.  Only invalidates the canvas when the
-    // player has produced a new frame -- so a 24fps video drives ~24 repaints/s
-    // at ×1, and fast-forward polling stays in sync with the decode cadence.
-    private void OnPresentTimerTick(object? sender, object e)
-    {
-        if (!_playing || _player is null) return;
-        if (_player.PeekFrameVersion() != _lastVersion)
-            FFplayCanvas.Invalidate();
-    }
-
     // -------------------------------------------------------------------------
     // Controls
     // -------------------------------------------------------------------------
@@ -205,7 +194,6 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         _player.Seek(seconds);
         _playing = true;
         FfPlayPauseButton.Content = ""; // Pause glyph
-        _presentTimer?.Start();
         FFplayCanvas.Invalidate();
     }
 
@@ -215,8 +203,6 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         double speed = Math.Clamp(FfSpeedNumberBox.Value, 0.1, 100.0);
         _player.Speed = speed;
         UpdateSpeedUI(speed);
-        if (_presentTimer is not null)
-            _presentTimer.Interval = PresentationIntervalFor(speed);
     }
 
     private void FfPitchButton_Click(object sender, RoutedEventArgs e)
@@ -240,9 +226,6 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
     // Win2D <-> native D3D11 device binding
     // -------------------------------------------------------------------------
 
-    // Each FFplayPlayer has its own D3D11 device, so this must be called on
-    // every Open() after the old device has been disposed.  The CanvasDevice
-    // is separate from the one in MediaPlayerControl.
     private void BindCanvasDeviceToPlayer()
     {
         if (_player is null) return;
@@ -342,18 +325,15 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        if (_presentTimer is not null)
+        if (_player is not null)
         {
-            _presentTimer.Stop();
-            _presentTimer.Tick -= OnPresentTimerTick;
-            _presentTimer = null;
+            _player.VideoFrameAvailable -= OnPlayerFrameAvailable;
+            _player.Dispose();
+            _player = null;
         }
 
         _frameBitmap?.Dispose();
         _frameBitmap = null;
-
-        _player?.Dispose();
-        _player = null;
 
         _canvasDevice?.Dispose();
         _canvasDevice = null;

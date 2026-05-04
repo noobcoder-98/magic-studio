@@ -71,16 +71,52 @@ static inline ::MagicFFplayHandle* HF(void* p) {
     return reinterpret_cast<::MagicFFplayHandle*>(p);
 }
 
-FFplayPlayer::FFplayPlayer() : _handle(nullptr) {}
+// Called by the native refresh thread.  ctx is GCHandle::ToIntPtr(_selfPin).
+// Reconstructs the FFplayPlayer^ and raises VideoFrameAvailable on the caller's
+// (background) thread — consistent with MediaPlayer.VideoFrameAvailable.
+void FFplayPlayer::NativeCallback(IntPtr ctx) {
+    auto handle = GCHandle::FromIntPtr(ctx);
+    if (!handle.IsAllocated || handle.Target == nullptr) return;
+    auto self = safe_cast<FFplayPlayer^>(handle.Target);
+    self->VideoFrameAvailable(self, EventArgs::Empty);
+}
+
+void FFplayPlayer::InstallFrameCallback() {
+    if (!_handle) return;
+    _selfPin       = GCHandle::Alloc(this);
+    _frameDelegate = gcnew NativeFrameAvailableCb(&FFplayPlayer::NativeCallback);
+    _delegatePin   = GCHandle::Alloc(_frameDelegate);
+    auto fp = (MagicFFplayFrameCallback)(void*)
+              Marshal::GetFunctionPointerForDelegate(_frameDelegate);
+    magic_ffplay_set_frame_callback(HF(_handle), fp,
+                                    GCHandle::ToIntPtr(_selfPin).ToPointer());
+}
+
+void FFplayPlayer::RemoveFrameCallback() {
+    // Clear the native side first so the refresh thread stops calling back
+    // before we free the GCHandle pins.
+    if (_handle)
+        magic_ffplay_set_frame_callback(HF(_handle), nullptr, nullptr);
+    if (_delegatePin.IsAllocated) { _delegatePin.Free(); }
+    if (_selfPin.IsAllocated)     { _selfPin.Free(); }
+    _frameDelegate = nullptr;
+}
+
+FFplayPlayer::FFplayPlayer()
+    : _handle(nullptr), _frameDelegate(nullptr) {}
+
 FFplayPlayer::~FFplayPlayer()  { this->!FFplayPlayer(); }
 FFplayPlayer::!FFplayPlayer()  {
+    RemoveFrameCallback();
     if (_handle) { magic_ffplay_close(HF(_handle)); _handle = nullptr; }
 }
 
 bool FFplayPlayer::Open(String^ path) {
+    RemoveFrameCallback();
     if (_handle) { magic_ffplay_close(HF(_handle)); _handle = nullptr; }
     std::string s = marshal_as<std::string>(path);
     _handle = magic_ffplay_open(s.c_str());
+    if (_handle) InstallFrameCallback();
     return _handle != nullptr;
 }
 

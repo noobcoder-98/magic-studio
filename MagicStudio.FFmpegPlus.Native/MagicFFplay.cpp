@@ -30,6 +30,7 @@
 // ============================================================================
 
 #include "pch.h"
+#include "MagicFFplay.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -538,6 +539,10 @@ struct VideoState {
     AVFilterContext*  af_src;            // abuffer
     AVFilterContext*  af_sink;           // abuffersink
     int               af_serial;         // last audioq serial pushed into graph
+
+    // Optional callback fired on the refresh thread after each new BGRA frame.
+    MagicFFplayFrameCallback on_frame_ready;
+    void*                    frame_callback_ctx;
 };
 
 // File-scope tunables (analogous to the static globals in ffplay.c).
@@ -1116,7 +1121,8 @@ retry:
     if (is->step && !is->paused)
         stream_toggle_pause(is);
 
-display:
+display: {
+    bool frame_updated = false;
     if (is->force_refresh && is->pictq.rindex_shown) {
         // Lazy NV12→BGRA conversion: only the frame that is actually about to
         // be shown pays the VideoProcessor cost.  Skipped frames (fast-forward)
@@ -1140,10 +1146,14 @@ display:
             // Unref immediately so the D3D11VA slot returns to the pool before
             // the next decode cycle.  frame_queue_unref_item calling av_frame_unref
             // again later is safe (idempotent on an already-empty AVFrame).
-            if (bgra) av_frame_unref(fp->frame);
+            if (bgra) { av_frame_unref(fp->frame); frame_updated = true; }
         }
         is->force_refresh = 0;
     }
+    // Fire outside the force_refresh block so the texture is fully committed.
+    if (frame_updated && is->on_frame_ready)
+        is->on_frame_ready(is->frame_callback_ctx);
+}
 }
 
 // ----------------------------------------------------------------------------
@@ -2151,6 +2161,9 @@ static VideoState* stream_open(const char* filename) {
     is->af_sink           = nullptr;
     is->af_serial         = -1;
 
+    is->on_frame_ready     = nullptr;
+    is->frame_callback_ctx = nullptr;
+
     is->read_tid    = SDL_CreateThread(read_thread,    "ffplay_read",    is);
     is->refresh_tid = SDL_CreateThread(refresh_thread, "ffplay_refresh", is);
     if (!is->read_tid || !is->refresh_tid) {
@@ -2349,6 +2362,16 @@ void magic_ffplay_set_pitch_correction(MagicFFplayHandle* h, int enabled) {
 
 int magic_ffplay_get_pitch_correction(MagicFFplayHandle* h) {
     return (h && h->is) ? (h->is->pitch_correction ? 1 : 0) : 1;
+}
+
+void magic_ffplay_set_frame_callback(MagicFFplayHandle* h,
+                                     MagicFFplayFrameCallback cb,
+                                     void* ctx) {
+    if (!h || !h->is) return;
+    // Plain stores: set_frame_callback is called once from the managed wrapper
+    // right after open, well before the refresh thread fires any callback.
+    h->is->frame_callback_ctx = ctx;
+    h->is->on_frame_ready     = cb;   // write last so ctx is visible when cb fires
 }
 
 // Returns the AddRef'd IDXGIDevice* of this handle's own D3D11 device.

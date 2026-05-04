@@ -42,10 +42,21 @@ public sealed class FFplayPlayer : IDisposable
 
     /// <summary>
     /// Cheap atomic load of the current frame version, with no texture AddRef.
-    /// Use this to detect new frames from a UI-thread polling timer without
-    /// the cost of wrapping a CanvasBitmap on every tick.
+    /// Use this to detect new frames without the cost of a full acquire.
     /// </summary>
     public ulong PeekFrameVersion() => _impl.PeekFrameVersion();
+
+    /// <summary>
+    /// Fires on the native refresh thread each time a new BGRA frame is ready.
+    /// Mirrors Windows.Media.Playback.MediaPlayer.VideoFrameAvailable —
+    /// callers must marshal to the UI thread themselves if needed.
+    /// After this fires, TryAcquireCurrentTexture returns the new frame.
+    /// </summary>
+    public event EventHandler? VideoFrameAvailable
+    {
+        add    => _impl.VideoFrameAvailable += value;
+        remove => _impl.VideoFrameAvailable -= value;
+    }
 
     public int    VideoWidth  => _impl.VideoWidth;
     public int    VideoHeight => _impl.VideoHeight;

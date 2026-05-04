@@ -64,6 +64,18 @@ double magic_ffplay_get_speed           (MagicFFplayHandle* h);
 void magic_ffplay_set_pitch_correction  (MagicFFplayHandle* h, int enabled);
 int  magic_ffplay_get_pitch_correction  (MagicFFplayHandle* h);
 
+// ---- Frame-available callback -----------------------------------------------
+// Fired on the native refresh thread each time a new BGRA frame is committed.
+// ctx is the opaque pointer passed to magic_ffplay_set_frame_callback.
+// After this fires, TryAcquireCurrentTexture returns the new frame immediately.
+typedef void (*MagicFFplayFrameCallback)(void* ctx);
+
+// Register (or clear) the callback.  Pass cb = NULL to unregister.
+// Safe to call at any time; takes effect on the next refresh cycle.
+void magic_ffplay_set_frame_callback(MagicFFplayHandle* h,
+                                     MagicFFplayFrameCallback cb,
+                                     void* ctx);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

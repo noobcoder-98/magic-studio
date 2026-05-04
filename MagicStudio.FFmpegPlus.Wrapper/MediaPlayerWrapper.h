@@ -5,6 +5,12 @@ using namespace System::Runtime::InteropServices;
 struct MagicPlayerHandle;
 struct MagicFFplayHandle;
 
+// Unmanaged-callable delegate that bridges the native frame callback into the
+// managed VideoFrameAvailable event.  Must be at module level (not nested in a
+// ref class) so GetFunctionPointerForDelegate produces a proper cdecl thunk.
+[UnmanagedFunctionPointer(CallingConvention::Cdecl)]
+private delegate void NativeFrameAvailableCb(IntPtr ctx);
+
 namespace MagicStudio {
 namespace FFmpegPlus {
 namespace Wrapper {
@@ -76,10 +82,18 @@ public:
 
     /// <summary>
     /// Returns the current frame version without acquiring a texture reference.
-    /// Cheap atomic load — safe to call from a UI-thread polling timer to
-    /// detect when a new frame is ready.  Returns 0 if no frame yet.
+    /// Cheap atomic load — safe to call to detect when a new frame is ready
+    /// without the cost of a full texture acquire.  Returns 0 if no frame yet.
     /// </summary>
     UInt64 PeekFrameVersion();
+
+    /// <summary>
+    /// Fires on the native refresh thread each time a new BGRA frame is ready.
+    /// Equivalent to Windows.Media.Playback.MediaPlayer.VideoFrameAvailable —
+    /// callers must marshal to the UI thread themselves if needed.
+    /// After this event fires, TryAcquireCurrentTexture returns the new frame.
+    /// </summary>
+    event EventHandler^ VideoFrameAvailable;
 
     property int    VideoWidth  { int    get(); }
     property int    VideoHeight { int    get(); }
@@ -96,6 +110,18 @@ public:
 
 private:
     void* _handle;
+
+    // Keeps the delegate and the self-reference alive across native callbacks.
+    NativeFrameAvailableCb^ _frameDelegate;
+    GCHandle                _delegatePin;
+    GCHandle                _selfPin;
+
+    // Static thunk — called by the native refresh thread; ctx is a GCHandle
+    // IntPtr pointing back to this FFplayPlayer instance.
+    static void NativeCallback(IntPtr ctx);
+
+    void InstallFrameCallback();
+    void RemoveFrameCallback();
 };
 
 }}} // namespace MagicStudio::FFmpegPlus::Wrapper
