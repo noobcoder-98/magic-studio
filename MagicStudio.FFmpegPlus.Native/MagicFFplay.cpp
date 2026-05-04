@@ -1182,11 +1182,11 @@ static int queue_picture(VideoState* is, AVFrame* src_frame,
 static int get_video_frame(VideoState* is, AVFrame* frame) {
     // Scale decoder effort with playback speed to reduce CPU usage.
     // skip_loop_filter: skip deblocking at > 2x (saves ~30% decode time).
-    // skip_frame: NV12→BGRA conversion is now lazy (display path only), so the
-    //   decode thread is no longer bottlenecked by VideoProcessor.  GPU-only H.264
-    //   decode typically exceeds 500fps, comfortably covering x10 (300fps needed).
-    //   AVDISCARD_NONREF (skip non-reference B-frames only) at > 30x keeps I+P
-    //   frames (~15fps cadence) so playback stays visually continuous at high speed.
+    // skip_frame: AVDISCARD_NONREF at > 30x keeps I+P frames (~15fps cadence)
+    //   so playback stays visually continuous up to ~50x.  Above 50x the
+    //   read_thread drops non-key video packets at the demuxer (so the decoder
+    //   only sees I-frames) — keeping skip_frame here is harmless since
+    //   I-frames are reference frames.
     {
         const double spd = is->playback_speed;
         is->viddec.avctx->skip_loop_filter =
@@ -2034,7 +2034,16 @@ static int read_thread(void* arg) {
             packet_queue_put(&is->audioq, pkt);
         } else if (pkt->stream_index == is->video_stream &&
                    !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
-            packet_queue_put(&is->videoq, pkt);
+            // Above ~50x the video decoder itself (not playback_speed) caps
+            // throughput at ~1500fps, which back-pressures MAX_QUEUE_SIZE and
+            // starves audioq.  Drop non-key video packets at the demuxer so
+            // videoq stays small and audio keeps flowing.  The decoder then
+            // sees only IDR keyframes, each starting a fresh sequence.
+            if (is->playback_speed > 50.0 && !(pkt->flags & AV_PKT_FLAG_KEY)) {
+                av_packet_unref(pkt);
+            } else {
+                packet_queue_put(&is->videoq, pkt);
+            }
         } else {
             av_packet_unref(pkt);
         }
