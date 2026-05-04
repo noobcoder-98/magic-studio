@@ -1136,6 +1136,11 @@ display:
             fp->tex     = bgra;
             fp->version = bgra ? ++(*is->frame_version_seq) : 0;
             SDL_UnlockMutex(is->pictq.mutex);
+            // BGRA is now in fp->tex; the NV12 surface is no longer needed.
+            // Unref immediately so the D3D11VA slot returns to the pool before
+            // the next decode cycle.  frame_queue_unref_item calling av_frame_unref
+            // again later is safe (idempotent on an already-empty AVFrame).
+            if (bgra) av_frame_unref(fp->frame);
         }
         is->force_refresh = 0;
     }
@@ -1803,9 +1808,12 @@ static int stream_component_open(VideoState* is, int stream_index) {
     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
         ret = create_hwaccel(is->gpu, &avctx->hw_device_ctx);
         if (ret < 0) goto fail;
-        avctx->get_format   = get_d3d11_format;
-        avctx->thread_count = 1;
-        avctx->thread_type  = 0;
+        avctx->get_format      = get_d3d11_format;
+        avctx->thread_count    = 1;
+        avctx->thread_type     = 0;
+        // Pool must cover the full pictq depth so D3D11VA never recycles a
+        // surface that is still referenced by a queued frame (checkerboard).
+        avctx->extra_hw_frames = VIDEO_PICTURE_QUEUE_SIZE + 4;
     }
 
     if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) goto fail;
