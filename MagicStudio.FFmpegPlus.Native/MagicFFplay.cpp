@@ -1287,14 +1287,23 @@ static int audio_thread(void* arg) {
 // Audio filter graph (libavfilter atempo time-stretching).
 // ----------------------------------------------------------------------------
 
-// Build a filter-chain string for [speed] using atempo (range 0.5–100.0).
-// For speed < 0.5 chain multiple atempo=0.5 stages until the remainder fits.
+// Build a filter-chain string for [speed] using atempo.
+// atempo's OLA algorithm only yields an exact duration ratio inside [0.5, 2.0];
+// a single atempo=100 emits noticeably more samples than input/100, so audio
+// keeps playing for ~1s after video finishes at 100x.  Chain stages so each
+// filter stays inside the well-behaved range:
+//   speed < 0.5 → chain atempo=0.5 stages
+//   speed > 2.0 → chain atempo=2.0 stages
 static std::string build_atempo_chain(double speed) {
     std::string chain;
     double rem = speed;
     while (rem < 0.5 - 1e-9) {
         chain += "atempo=0.5,";
         rem /= 0.5;
+    }
+    while (rem > 2.0 + 1e-9) {
+        chain += "atempo=2.0,";
+        rem /= 2.0;
     }
     char buf[64];
     snprintf(buf, sizeof(buf), "atempo=%.6f", rem);
