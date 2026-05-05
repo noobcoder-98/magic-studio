@@ -6,28 +6,91 @@ using WrapperFFplay = MagicStudio.FFmpegPlus.Wrapper.FFplayPlayer;
 
 namespace MagicStudio.FFmpegPlus;
 
+
+public enum MagicFFplayState
+{
+    Opening,
+    Playing,
+    Paused,
+    Closed
+}
+
 /// <summary>
 /// C# façade over the MagicFFplay C++ port of ffplay.c.
 /// Each instance owns its own D3D11 device so it can run alongside a Player
 /// instance for side-by-side comparison on independent GPU pipelines.
 /// </summary>
-public sealed class FFplayPlayer : IDisposable
+public sealed class MagicFFplayPlayer : IDisposable
 {
     private readonly WrapperFFplay _impl = new();
+    private MagicFFplayState _state = MagicFFplayState.Opening;
     private bool _disposed;
 
     public bool Open(string path)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        return _impl.Open(path);
+        if (_disposed)
+        {
+            throw new ObjectDisposedException(nameof(MagicFFplayPlayer));
+        }
+
+        var ret = _impl.Open(path);
+        _state = ret ? MagicFFplayState.Paused : MagicFFplayState.Closed;
+        return ret;
     }
 
-    public void Play()      => _impl.Play();
-    public void Pause()     => _impl.Pause();
-    public void Stop()      => _impl.Stop();
+    public void Play()
+    {
+        _impl.Play();
+        _state = MagicFFplayState.Playing;
+    }
+
+    public void Pause()
+    {
+        _impl.Pause();
+        _state = MagicFFplayState.Paused;
+    }
+
+    public void Stop()
+    {
+        _impl.Stop();
+        _state = MagicFFplayState.Closed;
+    }   
+
+    public void SetPosition(TimeSpan position, bool retrieveFrame)
+    {
+        _impl.SetPosition(position, retrieveFrame);
+    }
+
+    public TimeSpan GetPosition() => _impl.GetPosition();
+    public MagicFFplayState GetCurrentState() => _state;
+    public void ResetPlayerPosition(TimeSpan position) => _impl.ResetPlayerPosition(position);
+    public void SetTimelineControllerPositionOffset(TimeSpan offset) => _impl.SetTimelineOffset(offset);
+    public TimeSpan GetTimelineControllerPositionOffset() => _impl.GetTimelineOffset();
+    public void SetVolume(double volume) => _impl.SetVolume(volume);
+    public double GetVolume() => _impl.GetVolume();
+    public void SetMute(bool mute) => _impl.SetMute(mute);
+    public bool GetMute() => _impl.IsMuted();
     public void StepFrame() => _impl.StepFrame();
     public void Seek(double seconds) => _impl.Seek((long)(seconds * 1_000_000));
+    public void SetSpeed(double speed) => _impl.SetSpeed(speed);
+    public void GetSpeed() => _impl.GetSpeed();
+    public void SetPitch(bool pitch) => _impl.SetPitchCorrection(pitch);
+    public bool GetPitch() => _impl.GetPitchCorrection();
+    public double Speed
+    {
+        get => _impl.GetSpeed();
+        set => _impl.SetSpeed(value);
+    }
 
+    /// <summary>
+    /// Pitch correction: true = atempo (pitch preserved); false = tape-like.
+    /// Forced true when Speed >= 5.0 regardless of this value.
+    /// </summary>
+    public bool PitchCorrection
+    {
+        get => _impl.GetPitchCorrection();
+        set => _impl.SetPitchCorrection(value);
+    }
     public long GetAudioPositionUs() => _impl.GetAudioPositionUs();
 
     /// <summary>
@@ -107,19 +170,6 @@ public sealed class FFplayPlayer : IDisposable
     public double Duration    => _impl.Duration;
 
     /// <summary>Playback speed [0.1, 100.0]. Default 1.0.</summary>
-    public double Speed {
-        get => _impl.GetSpeed();
-        set => _impl.SetSpeed(value);
-    }
-
-    /// <summary>
-    /// Pitch correction: true = atempo (pitch preserved); false = tape-like.
-    /// Forced true when Speed >= 5.0 regardless of this value.
-    /// </summary>
-    public bool PitchCorrection {
-        get => _impl.GetPitchCorrection();
-        set => _impl.SetPitchCorrection(value);
-    }
 
     public void Dispose()
     {

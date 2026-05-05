@@ -55,13 +55,29 @@ public:
     ~FFplayPlayer();
     !FFplayPlayer();
 
-    bool   Open(String^ path);
-    void   Play();
-    void   Pause();
-    void   Stop();
-    void   Seek(Int64 positionUs);
-    void   StepFrame();
+    bool        Open(String^ path);
+    void        Play();
+    void        Pause();
+    void        Stop();
+	void        SetPosition(TimeSpan position, bool retrieveFrame);
+	TimeSpan    GetPosition();
+	void        ResetPlayerPosition(TimeSpan position);
+	void        SetTimelineOffset(TimeSpan offset);
+	TimeSpan	GetTimelineOffset();
+	void        SetVolume(double volume);
+	double	    GetVolume();
+	void 	    SetMute(bool mute);
+	bool        IsMuted();
+    // Playback speed [0.1, 100.0].
+    void   SetSpeed(double speed);
+    double GetSpeed();
 
+    // Pitch correction: true = atempo (preserve pitch); false = tape-like.
+    // Forced ON at speed >= 5.0.
+    void SetPitchCorrection(bool enabled);
+    bool GetPitchCorrection();
+    void        Seek(Int64 positionUs);
+    void        StepFrame();
     Int64  GetAudioPositionUs();
 
     /// <summary>
@@ -108,18 +124,11 @@ public:
     property int    VideoHeight { int    get(); }
     property double Duration    { double get(); }
 
-    // Playback speed [0.1, 100.0].
-    void   SetSpeed(double speed);
-    double GetSpeed();
-
-    // Pitch correction: true = atempo (preserve pitch); false = tape-like.
-    // Forced ON at speed >= 5.0.
-    void SetPitchCorrection(bool enabled);
-    bool GetPitchCorrection();
-
 private:
     void* _handle;
-
+	TimeSpan _position = TimeSpan::Zero;
+	TimeSpan _lastPosition = TimeSpan::MinValue;
+	TimeSpan _timelineOffset = TimeSpan::Zero;
     // Keeps the delegate and the self-reference alive across native callbacks.
     NativeFrameAvailableCb^ _frameDelegate;
     GCHandle                _delegatePin;

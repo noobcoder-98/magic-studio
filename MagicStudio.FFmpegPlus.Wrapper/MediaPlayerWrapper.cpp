@@ -123,6 +123,40 @@ bool FFplayPlayer::Open(String^ path) {
 void FFplayPlayer::Play()  { if (_handle && magic_ffplay_is_paused(HF(_handle)))  magic_ffplay_toggle_pause(HF(_handle)); }
 void FFplayPlayer::Pause() { if (_handle && !magic_ffplay_is_paused(HF(_handle))) magic_ffplay_toggle_pause(HF(_handle)); }
 void FFplayPlayer::Stop()  { if (!_handle) return; Pause(); magic_ffplay_seek_us(HF(_handle), 0); }
+void FFplayPlayer::SetPosition(TimeSpan position, bool retrieveFrame)
+{
+	if (_lastPosition != position) {
+        _lastPosition = position;
+        if (retrieveFrame) {
+            Seek(static_cast<Int64>(position.TotalMilliseconds * 1000));
+        }
+    }
+}
+
+TimeSpan FFplayPlayer::GetPosition()
+{
+	return _position;
+}
+
+void FFplayPlayer::ResetPlayerPosition(TimeSpan position)
+{
+    Seek(static_cast<Int64>(position.TotalMilliseconds * 1000));
+}
+
+void FFplayPlayer::SetTimelineOffset(TimeSpan offset)
+{
+    _timelineOffset = offset;
+}
+
+TimeSpan FFplayPlayer::GetTimelineOffset()
+{
+    return _timelineOffset;
+}
+
+void FFplayPlayer::SetVolume(double volume) { if (_handle) magic_ffplay_set_volume(HF(_handle), volume); }
+double FFplayPlayer::GetVolume() { return _handle ? magic_ffplay_get_volume(HF(_handle)) : 0; }
+void FFplayPlayer::SetMute(bool mute) { if (_handle) magic_ffplay_set_mute(HF(_handle), mute ? 1 : 0); }
+bool FFplayPlayer::IsMuted() { return _handle ? magic_ffplay_get_mute(HF(_handle)) != 0 : false; }
 void FFplayPlayer::Seek(Int64 us)  { if (_handle) magic_ffplay_seek_us(HF(_handle), static_cast<int64_t>(us)); }
 void FFplayPlayer::StepFrame()     { if (_handle) magic_ffplay_step_frame(HF(_handle)); }
 

@@ -2392,6 +2392,29 @@ void magic_ffplay_set_pitch_correction(MagicFFplayHandle* h, int enabled) {
     h->is->speed_changed->store(1);
 }
 
+void magic_ffplay_set_volume(MagicFFplayHandle* h, double volume) {
+    if (!h || !h->is) return;
+    double v = av_clipd(volume, 0.0, 1.0);
+    // Plain int store — same pattern as ffplay.c.  Aligned int writes are
+    // atomic on x86/x64; the audio callback may briefly read either old or new
+    // value across the boundary, which is inaudible.
+    h->is->audio_volume = (int)lrint(v * SDL_MIX_MAXVOLUME);
+}
+
+double magic_ffplay_get_volume(MagicFFplayHandle* h) {
+    if (!h || !h->is) return 0.0;
+    return (double)h->is->audio_volume / (double)SDL_MIX_MAXVOLUME;
+}
+
+void magic_ffplay_set_mute(MagicFFplayHandle* h, int enabled) {
+    if (!h || !h->is) return;
+    h->is->muted = enabled ? 1 : 0;
+}
+
+int magic_ffplay_get_mute(MagicFFplayHandle* h) {
+    return (h && h->is) ? h->is->muted : 0;
+}
+
 int magic_ffplay_get_pitch_correction(MagicFFplayHandle* h) {
     return (h && h->is) ? (h->is->pitch_correction ? 1 : 0) : 1;
 }

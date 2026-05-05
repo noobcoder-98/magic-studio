@@ -26,7 +26,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
     private static readonly Guid IID_IDXGISurface =
         new("CAFCB56C-6AC3-4889-BF47-9E23BBD260EC");
 
-    private FFplayPlayer?      _player;
+    private MagicFFplayPlayer?      _player;
     private CanvasDevice?      _canvasDevice;
     private CanvasRenderTarget? _destBitmap;
     private IDirect3DSurface?  _destSurface;
@@ -63,7 +63,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         _canvasDevice = null;
 
         _player?.Dispose();
-        _player = new FFplayPlayer();
+        _player = new MagicFFplayPlayer();
         bool ok = _player.Open(path);
         if (ok)
         {

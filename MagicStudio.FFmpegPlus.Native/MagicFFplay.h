@@ -72,6 +72,16 @@ double magic_ffplay_get_speed           (MagicFFplayHandle* h);
 void magic_ffplay_set_pitch_correction  (MagicFFplayHandle* h, int enabled);
 int  magic_ffplay_get_pitch_correction  (MagicFFplayHandle* h);
 
+// Linear playback volume in [0.0, 1.0].  Default 1.0.  Applied in the SDL
+// audio callback via SDL_MixAudioFormat; takes effect on the next callback.
+void   magic_ffplay_set_volume          (MagicFFplayHandle* h, double volume);
+double magic_ffplay_get_volume          (MagicFFplayHandle* h);
+
+// Mute (1 = muted / 0 = unmuted).  Default 0.  Independent from volume —
+// unmuting restores the previously-set volume.
+void magic_ffplay_set_mute              (MagicFFplayHandle* h, int enabled);
+int  magic_ffplay_get_mute              (MagicFFplayHandle* h);
+
 // ---- Frame-available callback -----------------------------------------------
 // Fired on the native refresh thread each time a new BGRA frame is committed.
 // ctx is the opaque pointer passed to magic_ffplay_set_frame_callback.
