@@ -1,4 +1,7 @@
 using System;
+using System.Runtime.InteropServices;
+using Windows.Graphics.DirectX.Direct3D11;
+using WinRT;
 using WrapperFFplay = MagicStudio.FFmpegPlus.Wrapper.FFplayPlayer;
 
 namespace MagicStudio.FFmpegPlus;
@@ -45,6 +48,47 @@ public sealed class FFplayPlayer : IDisposable
     /// Use this to detect new frames without the cost of a full acquire.
     /// </summary>
     public ulong PeekFrameVersion() => _impl.PeekFrameVersion();
+
+    /// <summary>
+    /// Copies the latest frame into <paramref name="destination"/> on the GPU.
+    /// Mirrors <c>Windows.Media.Playback.MediaPlayer.CopyFrameToVideoSurface</c>.
+    /// The surface must be backed by a BGRA texture on the same D3D11 device
+    /// returned by <see cref="AcquireDxgiDevice"/>, with width/height matching
+    /// the current frame.  Returns false if no frame is ready or the contract
+    /// is violated.
+    /// </summary>
+    public bool CopyFrameToVideoSurface(IDirect3DSurface destination)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (destination is null) return false;
+
+        // CsWinRT projection: a plain `(IDirect3DDxgiInterfaceAccess)` cast skips
+        // QI and throws InvalidCastException.  `.As<T>()` does the real COM QI.
+        var access = destination.As<IDirect3DDxgiInterfaceAccess>();
+        Guid iid = IID_ID3D11Texture2D;
+        int hr = access.GetInterface(in iid, out IntPtr texPtr);
+        if (hr < 0 || texPtr == IntPtr.Zero) return false;
+        try
+        {
+            return _impl.CopyFrameToTexture(texPtr);
+        }
+        finally
+        {
+            Marshal.Release(texPtr);
+        }
+    }
+
+    private static readonly Guid IID_ID3D11Texture2D =
+        new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
+
+    [ComImport]
+    [Guid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IDirect3DDxgiInterfaceAccess
+    {
+        [PreserveSig]
+        int GetInterface([In] in Guid iid, out IntPtr ppv);
+    }
 
     /// <summary>
     /// Fires on the native refresh thread each time a new BGRA frame is ready.

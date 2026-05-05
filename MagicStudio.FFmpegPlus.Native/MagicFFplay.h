@@ -48,6 +48,14 @@ int magic_ffplay_copy_current_bgra(MagicFFplayHandle* h,
                                    uint8_t* dst, int dst_capacity_bytes,
                                    int* out_w, int* out_h);
 
+// GPU-to-GPU copy of the current BGRA frame into a caller-provided texture.
+// dst must live on the same ID3D11Device as magic_ffplay_acquire_dxgi_device,
+// be DXGI_FORMAT_B8G8R8A8_UNORM, and match the source frame's width/height.
+// Mirrors Windows.Media.Playback.MediaPlayer.CopyFrameToVideoSurface.
+// Returns 1 on success; 0 if no frame is ready or the contract is violated.
+int magic_ffplay_copy_current_to_texture(MagicFFplayHandle* h,
+                                         ID3D11Texture2D* dst);
+
 // Returns the AddRef'd IDXGIDevice* of the player's own D3D11 device so the
 // host can build a CanvasDevice bound to the same GPU pipeline.
 int magic_ffplay_acquire_dxgi_device(MagicFFplayHandle* h, IDXGIDevice** out);

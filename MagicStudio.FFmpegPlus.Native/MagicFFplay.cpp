@@ -2337,6 +2337,38 @@ int magic_ffplay_copy_current_bgra(MagicFFplayHandle* h,
     return 1;
 }
 
+int magic_ffplay_copy_current_to_texture(MagicFFplayHandle* h, ID3D11Texture2D* dst) {
+    if (!h || !h->is || !h->is->gpu || !dst) return 0;
+
+    ID3D11Texture2D* src = nullptr;
+    if (!magic_ffplay_acquire_current_texture(h, &src) || !src) return 0;
+
+    D3D11_TEXTURE2D_DESC sd = {}; src->GetDesc(&sd);
+    D3D11_TEXTURE2D_DESC dd = {}; dst->GetDesc(&dd);
+    if (sd.Width != dd.Width || sd.Height != dd.Height) {
+        src->Release();
+        return 0;
+    }
+
+    // Both resources must be on the player's own D3D11 device — CopyResource
+    // crashes (or silently corrupts) across devices.  Compare the raw device
+    // pointer; same instance = same device.
+    ComPtr<ID3D11Device> dstDev;
+    dst->GetDevice(&dstDev);
+    if (dstDev.Get() != h->is->gpu->device.Get()) {
+        src->Release();
+        return 0;
+    }
+
+    FfplayGpu* g = h->is->gpu;
+    {
+        std::lock_guard<std::mutex> blt(g->bltMutex);
+        g->context->CopyResource(dst, src);
+    }
+    src->Release();
+    return 1;
+}
+
 void magic_ffplay_set_speed(MagicFFplayHandle* h, double speed) {
     if (!h || !h->is) return;
     double cur = get_master_clock(h->is);

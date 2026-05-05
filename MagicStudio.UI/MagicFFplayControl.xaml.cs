@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Controls;
 using System;
 using System.Runtime.InteropServices;
 using Windows.Foundation;
+using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
 using WinRT;
 
@@ -27,8 +28,10 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
 
     private FFplayPlayer?      _player;
     private CanvasDevice?      _canvasDevice;
-    private CanvasBitmap?      _frameBitmap;
-    private ulong              _lastVersion;
+    private CanvasRenderTarget? _destBitmap;
+    private IDirect3DSurface?  _destSurface;
+    private int                _destWidth;
+    private int                _destHeight;
     private bool               _playing;
     private bool               _disposed;
     private DispatcherQueue?   _dispatcherQueue;
@@ -54,9 +57,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         if (_player is not null)
             _player.VideoFrameAvailable -= OnPlayerFrameAvailable;
 
-        _frameBitmap?.Dispose();
-        _frameBitmap = null;
-        _lastVersion = 0;
+        DisposeDestSurface();
 
         _canvasDevice?.Dispose();
         _canvasDevice = null;
@@ -107,10 +108,20 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
 
     private void OnPlayerFrameAvailable(object? sender, EventArgs e)
     {
-        // Marshal to the UI thread; skip if not playing (paused/stopped).
+        // Fires on the native refresh thread.  Marshal to the UI thread, copy
+        // into our destination surface (GPU-side), then invalidate to draw it.
         if (!_playing) return;
-        _dispatcherQueue?.TryEnqueue(DispatcherQueuePriority.Normal,
-            () => { if (_playing) FFplayCanvas.Invalidate(); });
+        _dispatcherQueue?.TryEnqueue(DispatcherQueuePriority.Normal, () =>
+        {
+            if (!_playing || _player is null) return;
+            EnsureDestSurface();
+            if (_destSurface is null) return;
+            if (_player.CopyFrameToVideoSurface(_destSurface))
+            {
+                UpdateProgress(_player.GetAudioPositionUs());
+                FFplayCanvas.Invalidate();
+            }
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -119,38 +130,16 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
 
     private void FFplayCanvas_CreateResources(CanvasControl sender, CanvasCreateResourcesEventArgs args)
     {
-        // Resources are wrapped lazily from the native texture on first draw.
+        // Destination surface is created lazily once the first frame arrives,
+        // since we need the player's video size which isn't known before Open.
     }
 
     private void FFplayCanvas_Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
-        if (_player is null)
-            return;
-
-        IntPtr texturePtr = _player.TryAcquireCurrentTexture(out ulong version, out _, out _);
-        if (texturePtr != IntPtr.Zero)
-        {
-            try
-            {
-                if (version != _lastVersion)
-                {
-                    var newBitmap = WrapTextureAsBitmap(sender, texturePtr);
-                    _frameBitmap?.Dispose();
-                    _frameBitmap = newBitmap;
-                    _lastVersion = version;
-                    UpdateProgress(_player.GetAudioPositionUs());
-                }
-            }
-            finally
-            {
-                Marshal.Release(texturePtr);
-            }
-        }
-
-        if (_frameBitmap is not null)
+        if (_destBitmap is not null)
         {
             args.DrawingSession.DrawImage(
-                _frameBitmap,
+                _destBitmap,
                 new Rect(0, 0, sender.ActualWidth, sender.ActualHeight));
         }
     }
@@ -245,22 +234,61 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         }
     }
 
-    private static CanvasBitmap WrapTextureAsBitmap(ICanvasResourceCreator rc, IntPtr texturePtr)
+    // Lazily (re)create the destination CanvasRenderTarget + cached IDirect3DSurface
+    // wrapper.  Both views point at the same underlying ID3D11Texture2D — Win2D
+    // owns it and draws from it; the IDirect3DSurface wrapper is what we hand
+    // to FFplayPlayer.CopyFrameToVideoSurface every frame.
+    private void EnsureDestSurface()
     {
+        if (_canvasDevice is null || _player is null) return;
+        int w = _player.VideoWidth;
+        int h = _player.VideoHeight;
+        if (w <= 0 || h <= 0) return;
+        if (_destSurface is not null && _destWidth == w && _destHeight == h) return;
+
+        DisposeDestSurface();
+
+        var rt = new CanvasRenderTarget(_canvasDevice, w, h, 96f,
+            DirectXPixelFormat.B8G8R8A8UIntNormalized,
+            CanvasAlphaMode.Premultiplied);
+
+        // CanvasRenderTarget doesn't implement IDirect3DSurface directly; QI
+        // its IDXGISurface and wrap that as IDirect3DSurface.
+        var access = rt.As<IDirect3DDxgiInterfaceAccess>();
         Guid iid = IID_IDXGISurface;
-        int hr = Marshal.QueryInterface(texturePtr, ref iid, out IntPtr surfacePtr);
-        IDirect3DSurface? d3dSurface = null;
+        int hr = access.GetInterface(in iid, out IntPtr surfacePtr);
         try
         {
             Marshal.ThrowExceptionForHR(hr);
-            d3dSurface = CreateDirect3DSurfaceFromDxgi(surfacePtr);
-            return CanvasBitmap.CreateFromDirect3D11Surface(rc, d3dSurface);
+            _destSurface = CreateDirect3DSurfaceFromDxgi(surfacePtr);
         }
         finally
         {
-            (d3dSurface as IDisposable)?.Dispose();
             Marshal.Release(surfacePtr);
         }
+
+        _destBitmap = rt;
+        _destWidth  = w;
+        _destHeight = h;
+    }
+
+    private void DisposeDestSurface()
+    {
+        (_destSurface as IDisposable)?.Dispose();
+        _destSurface = null;
+        _destBitmap?.Dispose();
+        _destBitmap = null;
+        _destWidth  = 0;
+        _destHeight = 0;
+    }
+
+    [ComImport]
+    [Guid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IDirect3DDxgiInterfaceAccess
+    {
+        [PreserveSig]
+        int GetInterface([In] in Guid iid, out IntPtr ppv);
     }
 
     private static IDirect3DDevice CreateDirect3DDeviceFromDxgi(IntPtr dxgiDevice)
@@ -332,8 +360,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
             _player = null;
         }
 
-        _frameBitmap?.Dispose();
-        _frameBitmap = null;
+        DisposeDestSurface();
 
         _canvasDevice?.Dispose();
         _canvasDevice = null;

@@ -88,6 +88,15 @@ public:
     UInt64 PeekFrameVersion();
 
     /// <summary>
+    /// GPU copy of the latest frame into a caller-provided ID3D11Texture2D.
+    /// texturePtr is a raw ID3D11Texture2D* (not AddRef'd by this call).  The
+    /// destination must live on the same D3D11 device as AcquireDxgiDevice,
+    /// be BGRA, and match the source frame's size.  Returns false if no frame
+    /// is ready or the contract is violated.
+    /// </summary>
+    bool CopyFrameToTexture(IntPtr texturePtr);
+
+    /// <summary>
     /// Fires on the native refresh thread each time a new BGRA frame is ready.
     /// Equivalent to Windows.Media.Playback.MediaPlayer.VideoFrameAvailable —
     /// callers must marshal to the UI thread themselves if needed.
