@@ -110,18 +110,72 @@ using Microsoft::WRL::ComPtr;
 #define FRAME_QUEUE_SIZE                FFMAX(SAMPLE_QUEUE_SIZE, VIDEO_PICTURE_QUEUE_SIZE)
 
 // ----------------------------------------------------------------------------
-// Per-instance GPU pipeline (D3D11 device, VideoProcessor for NV12->BGRA).
-// Each MagicFFplayHandle owns one; independent from MagicFFmpegPlayer's
-// g_gpu singleton so both players can run simultaneously on separate devices.
+// GPU pipeline split:
+//   FfplaySharedGpu   - device + context + serialization mutexes; refcounted
+//                       so multiple players can share one D3D11 device.
+//   FfplayGpu         - per-player VideoProcessor + color-space cache, plus
+//                       a strong ref to its FfplaySharedGpu.
+// Default magic_ffplay_open creates a private FfplaySharedGpu (refcount=1).
+// magic_ffplay_open_with_shared_gpu shares the caller's FfplaySharedGpu so
+// the two players land on the same D3D11 device — required for cross-player
+// CopyResource (one CanvasDevice driving multiple videos).
 // ----------------------------------------------------------------------------
 
+struct FfplaySharedGpu {
+    ComPtr<ID3D11Device>         device;
+    ComPtr<ID3D11DeviceContext>  context;
+    ComPtr<IDXGIDevice>          dxgiDevice;
+    ComPtr<ID3D11VideoDevice>    videoDevice;
+    ComPtr<ID3D11VideoContext>   videoContext;
+    ComPtr<ID3D11VideoContext2>  videoContext2;   // ColorSpace1 + HDR metadata
+
+    // Serializes VideoProcessorBlt and CopyResource — needed because all
+    // players sharing this device share `context`.
+    std::mutex            bltMutex;
+    // Lock the ffmpeg D3D11VA hwaccel uses.  Shared so multiple decoders on
+    // the same device serialize their hw-context access.
+    std::recursive_mutex  ffmpegLock;
+
+    std::atomic<int>      refcount{1};
+};
+
+static FfplaySharedGpu* ffplay_shared_gpu_create() {
+    auto* s = new FfplaySharedGpu();
+
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT
+               | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+    const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+    HRESULT hr = D3D11CreateDevice(
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+        levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
+        &s->device, nullptr, &s->context);
+    if (FAILED(hr)) { delete s; return nullptr; }
+
+    ComPtr<ID3D10Multithread> mt;
+    if (SUCCEEDED(s->device.As(&mt))) mt->SetMultithreadProtected(TRUE);
+
+    if (FAILED(s->device.As(&s->dxgiDevice)))            { delete s; return nullptr; }
+    if (FAILED(s->device.As(&s->videoDevice)))           { delete s; return nullptr; }
+    if (FAILED(s->context.As(&s->videoContext)))         { delete s; return nullptr; }
+    // ID3D11VideoContext2 (Win10 1607+) — without it we cannot tone-map
+    // HDR PQ/HLG -> SDR correctly, treat as fatal.
+    if (FAILED(s->videoContext.As(&s->videoContext2)))   { delete s; return nullptr; }
+    return s;
+}
+
+static void ffplay_shared_gpu_addref(FfplaySharedGpu* s) {
+    if (s) s->refcount.fetch_add(1, std::memory_order_relaxed);
+}
+
+static void ffplay_shared_gpu_release(FfplaySharedGpu* s) {
+    if (!s) return;
+    if (s->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1)
+        delete s;
+}
+
 struct FfplayGpu {
-    ComPtr<ID3D11Device>                   device;
-    ComPtr<ID3D11DeviceContext>            context;
-    ComPtr<IDXGIDevice>                    dxgiDevice;
-    ComPtr<ID3D11VideoDevice>              videoDevice;
-    ComPtr<ID3D11VideoContext>             videoContext;
-    ComPtr<ID3D11VideoContext2>            videoContext2;   // for ColorSpace1 + HDR metadata
+    FfplaySharedGpu* shared = nullptr;   // strong ref (1)
+
     ComPtr<ID3D11VideoProcessorEnumerator> enumerator;
     ComPtr<ID3D11VideoProcessor>           processor;
     int  procW = 0;
@@ -135,38 +189,31 @@ struct FfplayGpu {
     bool                   hasHdrMeta    = false;
     DXGI_HDR_METADATA_HDR10 hdrMeta      = {};
 
-    std::mutex          bltMutex;
-    std::recursive_mutex ffmpegLock;
+    ~FfplayGpu() {
+        // Drop processor (it holds refs into shared->videoDevice) before the
+        // shared device, so destruction order is well-defined.
+        processor.Reset();
+        enumerator.Reset();
+        ffplay_shared_gpu_release(shared);
+    }
 };
 
-static void ffplay_gpu_lock_cb  (void* ctx) { reinterpret_cast<FfplayGpu*>(ctx)->ffmpegLock.lock();   }
-static void ffplay_gpu_unlock_cb(void* ctx) { reinterpret_cast<FfplayGpu*>(ctx)->ffmpegLock.unlock(); }
-
-static int ffplay_gpu_create(FfplayGpu* g) {
-    if (g->device) return 0;
-
-    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT
-               | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
-    const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
-    HRESULT hr = D3D11CreateDevice(
-        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
-        levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
-        &g->device, nullptr, &g->context);
-    if (FAILED(hr)) return -1;
-
-    ComPtr<ID3D10Multithread> mt;
-    if (SUCCEEDED(g->device.As(&mt))) mt->SetMultithreadProtected(TRUE);
-
-    if (FAILED(g->device.As(&g->dxgiDevice)))    return -1;
-    if (FAILED(g->device.As(&g->videoDevice)))   return -1;
-    if (FAILED(g->context.As(&g->videoContext))) return -1;
-
-    // ID3D11VideoContext2 (Win10 1607+) gives us VideoProcessorSetStream/
-    // OutputColorSpace1 plus HDR static-metadata APIs.  Treat as fatal --
-    // without it we cannot tone-map HDR -> SDR correctly.
-    if (FAILED(g->videoContext.As(&g->videoContext2))) return -1;
+// If shared_or_null is non-null, the FfplayGpu adopts an additional ref on it.
+// Otherwise a fresh FfplaySharedGpu is created with refcount=1.
+static int ffplay_gpu_init(FfplayGpu* g, FfplaySharedGpu* shared_or_null) {
+    if (g->shared) return 0;
+    if (shared_or_null) {
+        ffplay_shared_gpu_addref(shared_or_null);
+        g->shared = shared_or_null;
+    } else {
+        g->shared = ffplay_shared_gpu_create();
+        if (!g->shared) return -1;
+    }
     return 0;
 }
+
+static void ffplay_shared_gpu_lock_cb  (void* ctx) { reinterpret_cast<FfplaySharedGpu*>(ctx)->ffmpegLock.lock();   }
+static void ffplay_shared_gpu_unlock_cb(void* ctx) { reinterpret_cast<FfplaySharedGpu*>(ctx)->ffmpegLock.unlock(); }
 
 // Map AVFrame color metadata to a DXGI_COLOR_SPACE_TYPE understood by the
 // VideoProcessor.  When the input is HDR (PQ/HLG with BT.2020 primaries) the
@@ -272,8 +319,8 @@ static int ffplay_gpu_ensure_processor(FfplayGpu* g, int w, int h,
         desc.OutputHeight               = (UINT)h;
         desc.Usage                      = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
 
-        if (FAILED(g->videoDevice->CreateVideoProcessorEnumerator(&desc, &g->enumerator))) return -1;
-        if (FAILED(g->videoDevice->CreateVideoProcessor(g->enumerator.Get(), 0, &g->processor))) return -1;
+        if (FAILED(g->shared->videoDevice->CreateVideoProcessorEnumerator(&desc, &g->enumerator))) return -1;
+        if (FAILED(g->shared->videoDevice->CreateVideoProcessor(g->enumerator.Get(), 0, &g->processor))) return -1;
 
         // A fresh processor has no color-space / HDR state -- the inner
         // blocks below re-apply both because sizeChanged is true.
@@ -281,8 +328,8 @@ static int ffplay_gpu_ensure_processor(FfplayGpu* g, int w, int h,
     }
 
     if (sizeChanged || colorChanged) {
-        g->videoContext2->VideoProcessorSetStreamColorSpace1(g->processor.Get(), 0, inCs);
-        g->videoContext2->VideoProcessorSetOutputColorSpace1(g->processor.Get(),
+        g->shared->videoContext2->VideoProcessorSetStreamColorSpace1(g->processor.Get(), 0, inCs);
+        g->shared->videoContext2->VideoProcessorSetOutputColorSpace1(g->processor.Get(),
             DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
         g->inColorSpace  = inCs;
         g->outColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
@@ -290,14 +337,14 @@ static int ffplay_gpu_ensure_processor(FfplayGpu* g, int w, int h,
 
     if (sizeChanged || metaChanged) {
         if (hdrMeta) {
-            g->videoContext2->VideoProcessorSetStreamHDRMetaData(
+            g->shared->videoContext2->VideoProcessorSetStreamHDRMetaData(
                 g->processor.Get(), 0,
                 DXGI_HDR_METADATA_TYPE_HDR10, sizeof(*hdrMeta), hdrMeta);
             g->hdrMeta    = *hdrMeta;
             g->hasHdrMeta = true;
         } else if (g->hasHdrMeta) {
             // Clear stale metadata when switching from HDR to SDR.
-            g->videoContext2->VideoProcessorSetStreamHDRMetaData(
+            g->shared->videoContext2->VideoProcessorSetStreamHDRMetaData(
                 g->processor.Get(), 0, DXGI_HDR_METADATA_TYPE_NONE, 0, nullptr);
             g->hasHdrMeta = false;
         }
@@ -321,35 +368,35 @@ static ID3D11Texture2D* ffplay_gpu_nv12_to_bgra(FfplayGpu* g, ID3D11Texture2D* s
     outDesc.BindFlags        = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 
     ComPtr<ID3D11Texture2D> out;
-    if (FAILED(g->device->CreateTexture2D(&outDesc, nullptr, &out))) return nullptr;
+    if (FAILED(g->shared->device->CreateTexture2D(&outDesc, nullptr, &out))) return nullptr;
 
-    std::lock_guard<std::mutex>           blt(g->bltMutex);
-    std::lock_guard<std::recursive_mutex> ff(g->ffmpegLock);
+    std::lock_guard<std::mutex>           blt(g->shared->bltMutex);
+    std::lock_guard<std::recursive_mutex> ff(g->shared->ffmpegLock);
 
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivDesc = {};
     ivDesc.ViewDimension        = D3D11_VPIV_DIMENSION_TEXTURE2D;
     ivDesc.Texture2D.ArraySlice = slice;
     ComPtr<ID3D11VideoProcessorInputView> inView;
-    if (FAILED(g->videoDevice->CreateVideoProcessorInputView(
+    if (FAILED(g->shared->videoDevice->CreateVideoProcessorInputView(
             src, g->enumerator.Get(), &ivDesc, &inView))) return nullptr;
 
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovDesc = {};
     ovDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
     ComPtr<ID3D11VideoProcessorOutputView> outView;
-    if (FAILED(g->videoDevice->CreateVideoProcessorOutputView(
+    if (FAILED(g->shared->videoDevice->CreateVideoProcessorOutputView(
             out.Get(), g->enumerator.Get(), &ovDesc, &outView))) return nullptr;
 
     RECT r = { 0, 0, g->procW, g->procH };
-    g->videoContext->VideoProcessorSetStreamSourceRect(g->processor.Get(), 0, TRUE, &r);
-    g->videoContext->VideoProcessorSetStreamDestRect  (g->processor.Get(), 0, TRUE, &r);
-    g->videoContext->VideoProcessorSetOutputTargetRect(g->processor.Get(),    TRUE, &r);
+    g->shared->videoContext->VideoProcessorSetStreamSourceRect(g->processor.Get(), 0, TRUE, &r);
+    g->shared->videoContext->VideoProcessorSetStreamDestRect  (g->processor.Get(), 0, TRUE, &r);
+    g->shared->videoContext->VideoProcessorSetOutputTargetRect(g->processor.Get(),    TRUE, &r);
 
     D3D11_VIDEO_PROCESSOR_STREAM stream = {};
     stream.Enable        = TRUE;
     stream.OutputIndex   = 0;
     stream.pInputSurface = inView.Get();
 
-    if (FAILED(g->videoContext->VideoProcessorBlt(
+    if (FAILED(g->shared->videoContext->VideoProcessorBlt(
             g->processor.Get(), outView.Get(), 0, 1, &stream))) return nullptr;
 
     out->AddRef();
@@ -1769,7 +1816,7 @@ static enum AVPixelFormat get_d3d11_format(AVCodecContext* /*ctx*/, const enum A
 }
 
 static int create_hwaccel(FfplayGpu* g, AVBufferRef** device_ctx) {
-    if (ffplay_gpu_create(g) < 0) return AVERROR(ENOSYS);
+    if (!g->shared) return AVERROR(ENOSYS);
 
     *device_ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
     if (!*device_ctx) return AVERROR(ENOMEM);
@@ -1777,11 +1824,11 @@ static int create_hwaccel(FfplayGpu* g, AVBufferRef** device_ctx) {
     auto* dev = reinterpret_cast<AVHWDeviceContext*>((*device_ctx)->data);
     auto* d3d = static_cast<AVD3D11VADeviceContext*>(dev->hwctx);
 
-    g->device->AddRef();
-    d3d->device   = g->device.Get();
-    d3d->lock     = ffplay_gpu_lock_cb;
-    d3d->unlock   = ffplay_gpu_unlock_cb;
-    d3d->lock_ctx = g;
+    g->shared->device->AddRef();
+    d3d->device   = g->shared->device.Get();
+    d3d->lock     = ffplay_shared_gpu_lock_cb;
+    d3d->unlock   = ffplay_shared_gpu_unlock_cb;
+    d3d->lock_ctx = g->shared;
 
     int ret = av_hwdevice_ctx_init(*device_ctx);
     if (ret < 0) av_buffer_unref(device_ctx);
@@ -2122,11 +2169,12 @@ static void stream_close(VideoState* is) {
     av_free(is);
 }
 
-static VideoState* stream_open(const char* filename) {
+static VideoState* stream_open(const char* filename, FfplaySharedGpu* shared_or_null) {
     VideoState* is = (VideoState*)av_mallocz(sizeof(VideoState));
     if (!is) return nullptr;
 
     is->gpu               = new FfplayGpu();
+    if (ffplay_gpu_init(is->gpu, shared_or_null) < 0) goto fail;
     is->frame_version_seq = new std::atomic<uint64_t>(0);
     is->video_stream      = -1;
     is->audio_stream      = -1;
@@ -2188,10 +2236,10 @@ struct MagicFFplayHandle {
     std::mutex              staging_mutex;
 };
 
-MagicFFplayHandle* magic_ffplay_open(const char* path) {
+static MagicFFplayHandle* open_with_optional_shared(const char* path, FfplaySharedGpu* shared) {
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_TIMER) < 0) return nullptr;
 
-    VideoState* is = stream_open(path);
+    VideoState* is = stream_open(path, shared);
     if (!is) return nullptr;
 
     SDL_LockMutex(is->prep_mutex);
@@ -2208,6 +2256,32 @@ MagicFFplayHandle* magic_ffplay_open(const char* path) {
     auto* h = new MagicFFplayHandle();
     h->is = is;
     return h;
+}
+
+MagicFFplayHandle* magic_ffplay_open(const char* path) {
+    return open_with_optional_shared(path, nullptr);
+}
+
+MagicFFplayHandle* magic_ffplay_open_with_shared_gpu(const char* path,
+                                                    MagicFFplaySharedGpu* shared) {
+    return open_with_optional_shared(path, reinterpret_cast<FfplaySharedGpu*>(shared));
+}
+
+MagicFFplaySharedGpu* magic_ffplay_shared_gpu_create() {
+    return reinterpret_cast<MagicFFplaySharedGpu*>(ffplay_shared_gpu_create());
+}
+
+void magic_ffplay_shared_gpu_release(MagicFFplaySharedGpu* gpu) {
+    ffplay_shared_gpu_release(reinterpret_cast<FfplaySharedGpu*>(gpu));
+}
+
+int magic_ffplay_shared_gpu_acquire_dxgi_device(MagicFFplaySharedGpu* gpu, IDXGIDevice** out) {
+    if (!gpu || !out) return 0;
+    auto* s = reinterpret_cast<FfplaySharedGpu*>(gpu);
+    if (!s->dxgiDevice) return 0;
+    s->dxgiDevice->AddRef();
+    *out = s->dxgiDevice.Get();
+    return 1;
 }
 
 void magic_ffplay_close(MagicFFplayHandle* h) {
@@ -2306,21 +2380,21 @@ int magic_ffplay_copy_current_bgra(MagicFFplayHandle* h,
         sd.Usage            = D3D11_USAGE_STAGING;
         sd.CPUAccessFlags   = D3D11_CPU_ACCESS_READ;
         h->staging.Reset();
-        FfplayGpu* g = h->is->gpu;
-        if (FAILED(g->device->CreateTexture2D(&sd, nullptr, &h->staging))) {
+        FfplaySharedGpu* s = h->is->gpu->shared;
+        if (FAILED(s->device->CreateTexture2D(&sd, nullptr, &h->staging))) {
             src->Release(); return 0;
         }
         h->staging_w = w;
         h->staging_h = hh;
     }
 
-    FfplayGpu*            g = h->is->gpu;
+    FfplaySharedGpu*      s = h->is->gpu->shared;
     D3D11_MAPPED_SUBRESOURCE map = {};
     HRESULT hr;
     {
-        std::lock_guard<std::mutex> blt(g->bltMutex);
-        g->context->CopyResource(h->staging.Get(), src);
-        hr = g->context->Map(h->staging.Get(), 0, D3D11_MAP_READ, 0, &map);
+        std::lock_guard<std::mutex> blt(s->bltMutex);
+        s->context->CopyResource(h->staging.Get(), src);
+        hr = s->context->Map(h->staging.Get(), 0, D3D11_MAP_READ, 0, &map);
     }
     src->Release();
     if (FAILED(hr)) return 0;
@@ -2330,7 +2404,7 @@ int magic_ffplay_copy_current_bgra(MagicFFplayHandle* h,
     uint8_t*       dstRow = dst;
     for (int y = 0; y < hh; ++y, srcRow += map.RowPitch, dstRow += row_bytes)
         memcpy(dstRow, srcRow, row_bytes);
-    g->context->Unmap(h->staging.Get(), 0);
+    s->context->Unmap(h->staging.Get(), 0);
 
     *out_w = w;
     *out_h = hh;
@@ -2338,7 +2412,7 @@ int magic_ffplay_copy_current_bgra(MagicFFplayHandle* h,
 }
 
 int magic_ffplay_copy_current_to_texture(MagicFFplayHandle* h, ID3D11Texture2D* dst) {
-    if (!h || !h->is || !h->is->gpu || !dst) return 0;
+    if (!h || !h->is || !h->is->gpu || !h->is->gpu->shared || !dst) return 0;
 
     ID3D11Texture2D* src = nullptr;
     if (!magic_ffplay_acquire_current_texture(h, &src) || !src) return 0;
@@ -2350,20 +2424,20 @@ int magic_ffplay_copy_current_to_texture(MagicFFplayHandle* h, ID3D11Texture2D* 
         return 0;
     }
 
-    // Both resources must be on the player's own D3D11 device — CopyResource
+    // Both resources must be on the player's D3D11 device — CopyResource
     // crashes (or silently corrupts) across devices.  Compare the raw device
     // pointer; same instance = same device.
+    FfplaySharedGpu* s = h->is->gpu->shared;
     ComPtr<ID3D11Device> dstDev;
     dst->GetDevice(&dstDev);
-    if (dstDev.Get() != h->is->gpu->device.Get()) {
+    if (dstDev.Get() != s->device.Get()) {
         src->Release();
         return 0;
     }
 
-    FfplayGpu* g = h->is->gpu;
     {
-        std::lock_guard<std::mutex> blt(g->bltMutex);
-        g->context->CopyResource(dst, src);
+        std::lock_guard<std::mutex> blt(s->bltMutex);
+        s->context->CopyResource(dst, src);
     }
     src->Release();
     return 1;
@@ -2433,11 +2507,10 @@ void magic_ffplay_set_frame_callback(MagicFFplayHandle* h,
 int magic_ffplay_acquire_dxgi_device(MagicFFplayHandle* h, IDXGIDevice** out) {
     if (!h || !out) return 0;
     *out = nullptr;
-    FfplayGpu* g = h->is ? h->is->gpu : nullptr;
-    if (!g) return 0;
-    if (ffplay_gpu_create(g) < 0) return 0;
-    g->dxgiDevice->AddRef();
-    *out = g->dxgiDevice.Get();
+    FfplaySharedGpu* s = (h->is && h->is->gpu) ? h->is->gpu->shared : nullptr;
+    if (!s || !s->dxgiDevice) return 0;
+    s->dxgiDevice->AddRef();
+    *out = s->dxgiDevice.Get();
     return 1;
 }
 

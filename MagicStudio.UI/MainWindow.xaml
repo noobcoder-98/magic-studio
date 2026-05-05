@@ -20,27 +20,26 @@
         </Grid.RowDefinitions>
 
         <!-- Toolbar -->
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="8,4"
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="6" Padding="8,4"
                     Background="{ThemeResource LayerFillColorDefaultBrush}">
-            <Button Content="Open File" Click="OpenFile_Click" />
+            <Button Content="Open File"     Click="OpenFile_Click" />
+            <Button Content="Dual: Open A"  Click="OpenDualA_Click" />
+            <Button Content="Dual: Open B"  Click="OpenDualB_Click" />
         </StackPanel>
 
-        <!-- Side-by-side comparison: left = MagicFFmpegPlayer, right = MagicFFplay -->
+        <!-- Two examples stacked: top = single-video player, bottom = shared-GPU dual demo -->
         <Grid Grid.Row="1">
-            <Grid.ColumnDefinitions>
-                <!--<ColumnDefinition Width="*" />-->
-                <ColumnDefinition Width="4" />
-                <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="4" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
 
-            <!-- Existing player (MagicFFmpegPlayer.cpp) -->
-            <!--<local:MediaPlayerControl x:Name="MediaPlayer" Grid.Column="0" />-->
+            <local:MagicFFplayControl x:Name="FFplayPlayer" Grid.Row="0" />
 
-            <!-- Splitter -->
-            <Border Grid.Column="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+            <Border Grid.Row="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
 
-            <!-- New player (MagicFFplay.cpp ffplay.c C++ port) -->
-            <local:MagicFFplayControl x:Name="FFplayPlayer" Grid.Column="2" />
+            <local:DualFFplayControl  x:Name="DualPlayer"   Grid.Row="2" />
         </Grid>
     </Grid>
 </Window>

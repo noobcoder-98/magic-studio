@@ -3,8 +3,9 @@
 
 // Give C++/CLI a complete type for each handle so it can emit valid metadata.
 // The actual layout lives in the Native static lib; we only pass pointers here.
-struct MagicPlayerHandle  {};
-struct MagicFFplayHandle  {};
+struct MagicPlayerHandle    {};
+struct MagicFFplayHandle    {};
+struct MagicFFplaySharedGpu {};
 
 using namespace msclr::interop;
 
@@ -64,6 +65,34 @@ int MediaPlayer::VideoHeight::get() { int w=0,h=0; return _handle && magic_playe
 double MediaPlayer::Duration::get() { return _handle ? magic_player_duration_seconds(HP(_handle)) : 0; }
 
 // ============================================================================
+// FFplaySharedGpu  (wraps MagicFFplaySharedGpu / magic_ffplay_shared_gpu_*)
+// ============================================================================
+
+static inline ::MagicFFplaySharedGpu* HS(void* p) {
+    return reinterpret_cast<::MagicFFplaySharedGpu*>(p);
+}
+
+FFplaySharedGpu::FFplaySharedGpu() : _handle(nullptr) {
+    _handle = magic_ffplay_shared_gpu_create();
+}
+
+FFplaySharedGpu::~FFplaySharedGpu()  { this->!FFplaySharedGpu(); }
+FFplaySharedGpu::!FFplaySharedGpu()  {
+    if (_handle) { magic_ffplay_shared_gpu_release(HS(_handle)); _handle = nullptr; }
+}
+
+bool FFplaySharedGpu::IsValid::get() { return _handle != nullptr; }
+
+IntPtr FFplaySharedGpu::AcquireDxgiDevice() {
+    if (!_handle) return IntPtr::Zero;
+    IDXGIDevice* dev = nullptr;
+    return (magic_ffplay_shared_gpu_acquire_dxgi_device(HS(_handle), &dev) && dev)
+        ? IntPtr(dev) : IntPtr::Zero;
+}
+
+void* FFplaySharedGpu::GetNativeHandle() { return _handle; }
+
+// ============================================================================
 // FFplayPlayer  (wraps MagicFFplay / magic_ffplay_* API)
 // ============================================================================
 
@@ -116,6 +145,18 @@ bool FFplayPlayer::Open(String^ path) {
     if (_handle) { magic_ffplay_close(HF(_handle)); _handle = nullptr; }
     std::string s = marshal_as<std::string>(path);
     _handle = magic_ffplay_open(s.c_str());
+    if (_handle) InstallFrameCallback();
+    return _handle != nullptr;
+}
+
+bool FFplayPlayer::Open(String^ path, FFplaySharedGpu^ shared) {
+    RemoveFrameCallback();
+    if (_handle) { magic_ffplay_close(HF(_handle)); _handle = nullptr; }
+    if (shared == nullptr || !shared->IsValid) return false;
+    std::string s = marshal_as<std::string>(path);
+    _handle = magic_ffplay_open_with_shared_gpu(
+        s.c_str(),
+        reinterpret_cast<::MagicFFplaySharedGpu*>(shared->GetNativeHandle()));
     if (_handle) InstallFrameCallback();
     return _handle != nullptr;
 }

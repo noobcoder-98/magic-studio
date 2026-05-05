@@ -2,9 +2,39 @@ using System;
 using System.Runtime.InteropServices;
 using Windows.Graphics.DirectX.Direct3D11;
 using WinRT;
-using WrapperFFplay = MagicStudio.FFmpegPlus.Wrapper.FFplayPlayer;
+using WrapperFFplay     = MagicStudio.FFmpegPlus.Wrapper.FFplayPlayer;
+using WrapperSharedGpu  = MagicStudio.FFmpegPlus.Wrapper.FFplaySharedGpu;
 
 namespace MagicStudio.FFmpegPlus;
+
+/// <summary>
+/// Refcounted handle to a D3D11 device that can be shared across multiple
+/// <see cref="MagicFFplayPlayer"/> instances.  Pass one to the
+/// <see cref="MagicFFplayPlayer.Open(string, MagicFFplaySharedGpu)"/> overload
+/// so all players land on the same GPU pipeline — required when a single
+/// CanvasDevice needs to render frames from more than one player.
+/// </summary>
+public sealed class MagicFFplaySharedGpu : IDisposable
+{
+    internal readonly WrapperSharedGpu _impl = new();
+    private bool _disposed;
+
+    public bool IsValid => _impl.IsValid;
+
+    /// <summary>
+    /// AddRef'd IDXGIDevice* of the shared D3D11 device.  Caller releases via
+    /// <see cref="Marshal.Release(IntPtr)"/> once a CanvasDevice has captured
+    /// its own reference.
+    /// </summary>
+    public IntPtr AcquireDxgiDevice() => _impl.AcquireDxgiDevice();
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _impl.Dispose();
+        _disposed = true;
+    }
+}
 
 
 public enum MagicFFplayState
@@ -34,6 +64,22 @@ public sealed class MagicFFplayPlayer : IDisposable
         }
 
         var ret = _impl.Open(path);
+        _state = ret ? MagicFFplayState.Paused : MagicFFplayState.Closed;
+        return ret;
+    }
+
+    /// <summary>
+    /// Open <paramref name="path"/> bound to a caller-provided shared GPU.
+    /// All players sharing the same <see cref="MagicFFplaySharedGpu"/> use
+    /// the same underlying D3D11 device, which lets a single CanvasDevice
+    /// render frames from any of them.
+    /// </summary>
+    public bool Open(string path, MagicFFplaySharedGpu shared)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(shared);
+
+        var ret = _impl.Open(path, shared._impl);
         _state = ret ? MagicFFplayState.Paused : MagicFFplayState.Closed;
         return ret;
     }

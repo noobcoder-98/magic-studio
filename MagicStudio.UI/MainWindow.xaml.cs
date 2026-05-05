@@ -13,12 +13,12 @@ public sealed partial class MainWindow : Window
 
         Closed += (_, _) =>
         {
-            //MediaPlayer.Dispose();
             FFplayPlayer.Dispose();
+            DualPlayer.Dispose();
         };
     }
 
-    private async void OpenFile_Click(object sender, RoutedEventArgs e)
+    private async System.Threading.Tasks.Task<string?> PickVideoAsync()
     {
         var picker = new FileOpenPicker();
         WinRT.Interop.InitializeWithWindow.Initialize(picker,
@@ -33,16 +33,28 @@ public sealed partial class MainWindow : Window
         picker.FileTypeFilter.Add("*");
 
         var file = await picker.PickSingleFileAsync();
-        if (file is null) return;
+        return file?.Path;
+    }
 
-        // Open the same file in both players simultaneously.
-        //MediaPlayer.Pause();
+    private async void OpenFile_Click(object sender, RoutedEventArgs e)
+    {
+        var path = await PickVideoAsync();
+        if (path is null) return;
+
         FFplayPlayer.Pause();
-
-        //if (MediaPlayer.Open(file.Path))
-        //    MediaPlayer.Play();
-
-        if (FFplayPlayer.Open(file.Path))
+        if (FFplayPlayer.Open(path))
             FFplayPlayer.Play();
+    }
+
+    private async void OpenDualA_Click(object sender, RoutedEventArgs e)
+    {
+        var path = await PickVideoAsync();
+        if (path is not null) DualPlayer.OpenA(path);
+    }
+
+    private async void OpenDualB_Click(object sender, RoutedEventArgs e)
+    {
+        var path = await PickVideoAsync();
+        if (path is not null) DualPlayer.OpenB(path);
     }
 }

@@ -4,6 +4,7 @@ using namespace System::Runtime::InteropServices;
 
 struct MagicPlayerHandle;
 struct MagicFFplayHandle;
+struct MagicFFplaySharedGpu;
 
 // Unmanaged-callable delegate that bridges the native frame callback into the
 // managed VideoFrameAvailable event.  Must be at module level (not nested in a
@@ -46,8 +47,39 @@ private:
 };
 
 /// <summary>
-/// Managed wrapper around MagicFFplay (the C++ port of ffplay.c with its own
-/// per-instance D3D11 device, for side-by-side comparison with MediaPlayer).
+/// Refcounted handle to a D3D11 device that can be shared by multiple
+/// FFplayPlayer instances.  Construct one, pass it to FFplayPlayer.Open,
+/// and all such players will land on the same GPU pipeline so a single
+/// CanvasDevice can render frames from any of them.
+/// </summary>
+public ref class FFplaySharedGpu sealed {
+public:
+    FFplaySharedGpu();
+    ~FFplaySharedGpu();
+    !FFplaySharedGpu();
+
+    /// <summary>
+    /// AddRef'd IDXGIDevice* of the shared device.  Caller releases via
+    /// Marshal.Release once CanvasDevice has captured its own reference.
+    /// </summary>
+    IntPtr AcquireDxgiDevice();
+
+    /// <summary>True after construction succeeded (D3D11 device created).</summary>
+    property bool IsValid { bool get(); }
+
+internal:
+    // Native MagicFFplaySharedGpu* — used by FFplayPlayer::Open(path, shared).
+    void* GetNativeHandle();
+
+private:
+    void* _handle;
+};
+
+/// <summary>
+/// Managed wrapper around MagicFFplay (the C++ port of ffplay.c).  Each
+/// player owns a strong ref on a shared GPU; the default constructor path
+/// creates a private one.  Use the FFplaySharedGpu overload of Open to put
+/// multiple players on the same D3D11 device.
 /// </summary>
 public ref class FFplayPlayer sealed {
 public:
@@ -56,6 +88,7 @@ public:
     !FFplayPlayer();
 
     bool        Open(String^ path);
+    bool        Open(String^ path, FFplaySharedGpu^ shared);
     void        Play();
     void        Pause();
     void        Stop();

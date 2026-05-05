@@ -15,12 +15,35 @@
 extern "C" {
 #endif
 
-typedef struct MagicFFplayHandle MagicFFplayHandle;
+typedef struct MagicFFplayHandle    MagicFFplayHandle;
+typedef struct MagicFFplaySharedGpu MagicFFplaySharedGpu;
 
 // Open a media file and start the demux + decode + audio threads.
 // Blocks until the file header has been parsed so the caller sees a valid
-// Duration / VideoSize on return.  Returns NULL on failure.
+// Duration / VideoSize on return.  Returns NULL on failure.  The handle owns
+// its own D3D11 device — equivalent to creating a private shared-gpu via
+// magic_ffplay_shared_gpu_create.
 MagicFFplayHandle* magic_ffplay_open(const char* path);
+
+// Same as magic_ffplay_open, but binds the new player to a caller-provided
+// shared GPU.  All players sharing a MagicFFplaySharedGpu use the same
+// underlying ID3D11Device, which lets a single CanvasDevice render frames
+// from all of them (cross-player CopyResource works only on same device).
+MagicFFplayHandle* magic_ffplay_open_with_shared_gpu(const char*           path,
+                                                     MagicFFplaySharedGpu* shared);
+
+// Create a refcounted shared GPU (refcount = 1 on return).  The caller owns
+// this initial reference and must release it via magic_ffplay_shared_gpu_release
+// when done.  Each magic_ffplay_open_with_shared_gpu call adds one ref;
+// releasing the player drops that ref.  Returns NULL on D3D11 init failure.
+MagicFFplaySharedGpu* magic_ffplay_shared_gpu_create();
+void                  magic_ffplay_shared_gpu_release(MagicFFplaySharedGpu* gpu);
+
+// AddRef'd IDXGIDevice* for the shared D3D11 device.  Use this to bind a
+// CanvasDevice to the same pipeline so wrapping textures from any player
+// sharing this GPU as CanvasBitmap works without device-mismatch errors.
+int magic_ffplay_shared_gpu_acquire_dxgi_device(MagicFFplaySharedGpu* gpu,
+                                                IDXGIDevice**         out);
 
 void    magic_ffplay_close           (MagicFFplayHandle* h);
 
