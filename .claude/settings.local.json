@@ -25,7 +25,8 @@
       "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" -nologo -m -p:Configuration=Debug -p:Platform=x64 MagicStudio.slnx)",
       "Bash(\"/c/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe\" -nologo -m -p:Configuration=Debug -p:Platform=x64 MagicStudio.slnx)",
       "Bash(where msbuild *)",
-      "Bash(where dotnet *)"
+      "Bash(where dotnet *)",
+      "Bash(dotnet build *)"
     ]
   }
 }

@@ -80,6 +80,18 @@ public sealed partial class DualFFplayControl : UserControl, IDisposable
         _b.Player?.Pause();
     }
 
+    private void SetSpeedA_Click(object sender, RoutedEventArgs e)
+        => ApplySpeed(_a, SpeedANumberBox.Value);
+
+    private void SetSpeedB_Click(object sender, RoutedEventArgs e)
+        => ApplySpeed(_b, SpeedBNumberBox.Value);
+
+    private static void ApplySpeed(Slot slot, double value)
+    {
+        if (slot.Player is null) return;
+        slot.Player.Speed = Math.Clamp(value, 0.1, 100.0);
+    }
+
     // -------------------------------------------------------------------------
     // Slot lifecycle
     // -------------------------------------------------------------------------
