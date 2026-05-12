@@ -172,18 +172,9 @@ public sealed partial class DualFFplayControl : UserControl, IDisposable
 
         if (_canvasDevice is null)
         {
-            IntPtr dxgi = _sharedGpu.AcquireDxgiDevice();
-            if (dxgi == IntPtr.Zero) return;
-            try
-            {
-                IDirect3DDevice d3d = CreateDirect3DDeviceFromDxgi(dxgi);
-                _canvasDevice = CanvasDevice.CreateFromDirect3D11Device(d3d);
+            _canvasDevice = _sharedGpu.CreateCanvasDevice();
+            if (_canvasDevice is not null)
                 DualCanvas.CustomDevice = _canvasDevice;
-            }
-            finally
-            {
-                Marshal.Release(dxgi);
-            }
         }
     }
 
@@ -219,23 +210,12 @@ public sealed partial class DualFFplayControl : UserControl, IDisposable
         int GetInterface([In] in Guid iid, out IntPtr ppv);
     }
 
-    private static IDirect3DDevice CreateDirect3DDeviceFromDxgi(IntPtr dxgiDevice)
-    {
-        CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice, out IntPtr abi);
-        try { return MarshalInspectable<IDirect3DDevice>.FromAbi(abi); }
-        finally { Marshal.Release(abi); }
-    }
-
     private static IDirect3DSurface CreateDirect3DSurfaceFromDxgi(IntPtr dxgiSurface)
     {
         CreateDirect3D11SurfaceFromDXGISurface(dxgiSurface, out IntPtr abi);
         try { return MarshalInspectable<IDirect3DSurface>.FromAbi(abi); }
         finally { Marshal.Release(abi); }
     }
-
-    [DllImport("d3d11.dll", ExactSpelling = true, PreserveSig = false)]
-    private static extern void CreateDirect3D11DeviceFromDXGIDevice(IntPtr dxgiDevice,
-                                                                    out IntPtr graphicsDevice);
 
     [DllImport("d3d11.dll", ExactSpelling = true, PreserveSig = false)]
     private static extern void CreateDirect3D11SurfaceFromDXGISurface(IntPtr dxgiSurface,

@@ -28,6 +28,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
 
     private MagicFFplayPlayer?      _player;
     private CanvasDevice?      _canvasDevice;
+    private CanvasDevice?      _playerCanvasDevice;
     private CanvasRenderTarget? _destBitmap;
     private IDirect3DSurface?  _destSurface;
     private int                _destWidth;
@@ -69,6 +70,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         {
             _player.VideoFrameAvailable += OnPlayerFrameAvailable;
             BindCanvasDeviceToPlayer();
+            _playerCanvasDevice = _canvasDevice;
 
             double duration = _player.Duration;
             _suppressSlider = true;
@@ -219,19 +221,9 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
     {
         if (_player is null) return;
 
-        IntPtr dxgiPtr = _player.AcquireDxgiDevice();
-        if (dxgiPtr == IntPtr.Zero) return;
-
-        try
-        {
-            IDirect3DDevice d3dDevice = CreateDirect3DDeviceFromDxgi(dxgiPtr);
-            _canvasDevice = CanvasDevice.CreateFromDirect3D11Device(d3dDevice);
+        _canvasDevice = new() { LowPriority = true };
+        if (_canvasDevice is not null)
             FFplayCanvas.CustomDevice = _canvasDevice;
-        }
-        finally
-        {
-            Marshal.Release(dxgiPtr);
-        }
     }
 
     // Lazily (re)create the destination CanvasRenderTarget + cached IDirect3DSurface
@@ -248,7 +240,7 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
 
         DisposeDestSurface();
 
-        var rt = new CanvasRenderTarget(_canvasDevice, w, h, 96f,
+        var rt = new CanvasRenderTarget(_playerCanvasDevice, w, h, 96f,
             DirectXPixelFormat.B8G8R8A8UIntNormalized,
             CanvasAlphaMode.Premultiplied);
 
@@ -291,23 +283,12 @@ public sealed partial class MagicFFplayControl : UserControl, IDisposable
         int GetInterface([In] in Guid iid, out IntPtr ppv);
     }
 
-    private static IDirect3DDevice CreateDirect3DDeviceFromDxgi(IntPtr dxgiDevice)
-    {
-        CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice, out IntPtr abi);
-        try { return MarshalInspectable<IDirect3DDevice>.FromAbi(abi); }
-        finally { Marshal.Release(abi); }
-    }
-
     private static IDirect3DSurface CreateDirect3DSurfaceFromDxgi(IntPtr dxgiSurface)
     {
         CreateDirect3D11SurfaceFromDXGISurface(dxgiSurface, out IntPtr abi);
         try { return MarshalInspectable<IDirect3DSurface>.FromAbi(abi); }
         finally { Marshal.Release(abi); }
     }
-
-    [DllImport("d3d11.dll", ExactSpelling = true, PreserveSig = false)]
-    private static extern void CreateDirect3D11DeviceFromDXGIDevice(IntPtr dxgiDevice,
-                                                                    out IntPtr graphicsDevice);
 
     [DllImport("d3d11.dll", ExactSpelling = true, PreserveSig = false)]
     private static extern void CreateDirect3D11SurfaceFromDXGISurface(IntPtr dxgiSurface,

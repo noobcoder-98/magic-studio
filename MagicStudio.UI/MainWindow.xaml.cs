@@ -11,11 +11,17 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
 
-        Closed += (_, _) =>
-        {
-            FFplayPlayer.Dispose();
-            DualPlayer.Dispose();
-        };
+        QuadPlayer.OpenRequested += OnOpenRequested;
+
+        Closed += (_, _) => QuadPlayer.Dispose();
+    }
+
+    private async void OnOpenRequested(object? sender,
+        QuadFFplayControl.SlotOpenRequestedEventArgs e)
+    {
+        var path = await PickVideoAsync();
+        if (path is null) return;
+        QuadPlayer.OpenSlot(e.Index, path);
     }
 
     private async System.Threading.Tasks.Task<string?> PickVideoAsync()
@@ -34,27 +40,5 @@ public sealed partial class MainWindow : Window
 
         var file = await picker.PickSingleFileAsync();
         return file?.Path;
-    }
-
-    private async void OpenFile_Click(object sender, RoutedEventArgs e)
-    {
-        var path = await PickVideoAsync();
-        if (path is null) return;
-
-        FFplayPlayer.Pause();
-        if (FFplayPlayer.Open(path))
-            FFplayPlayer.Play();
-    }
-
-    private async void OpenDualA_Click(object sender, RoutedEventArgs e)
-    {
-        var path = await PickVideoAsync();
-        if (path is not null) DualPlayer.OpenA(path);
-    }
-
-    private async void OpenDualB_Click(object sender, RoutedEventArgs e)
-    {
-        var path = await PickVideoAsync();
-        if (path is not null) DualPlayer.OpenB(path);
     }
 }

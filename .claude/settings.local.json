@@ -26,7 +26,13 @@
       "Bash(\"/c/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe\" -nologo -m -p:Configuration=Debug -p:Platform=x64 MagicStudio.slnx)",
       "Bash(where msbuild *)",
       "Bash(where dotnet *)",
-      "Bash(dotnet build *)"
+      "Bash(dotnet build *)",
+      "Bash(dir D:sourceMagicStudio *)",
+      "PowerShell(Test-Path *)",
+      "PowerShell($vsPath = & \"${env:ProgramFiles\\(x86\\)}\\\\Microsoft Visual Studio\\\\Installer\\\\vswhere.exe\" -latest -property installationPath; & \"$vsPath\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"MagicStudio.UI\\\\MagicStudio.UI.csproj\" /p:Platform=x64 /p:Configuration=Debug /nologo /v:minimal /m)",
+      "Bash(xargs grep -l \"master_clock\\\\|set_speed\")",
+      "Bash(awk 'NR>=140 && NR<=150 { for\\(i=1;i<=length\\($0\\);i++\\){c=substr\\($0,i,1\\); printf \"%s\", c} print \"\" }' MagicStudio.UI/QuadFFplayControl.xaml.cs)",
+      "Bash(awk 'NR>=145 && NR<=160' MagicStudio.UI/QuadFFplayControl.xaml.cs)"
     ]
   }
 }
