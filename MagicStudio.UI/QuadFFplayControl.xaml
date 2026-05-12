@@ -36,6 +36,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <canvas:CanvasControl
@@ -220,6 +221,17 @@
                            Style="{StaticResource SlotSpeedBoxStyle}" />
                 <Button Tag="3" Content="Set" Padding="10,4" Click="SetSpeed_Click" />
             </StackPanel>
+        </Grid>
+
+        <Grid
+            Grid.Row="5"
+            Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+            <Button 
+                Content="Reset All" 
+                HorizontalAlignment="Left" 
+                Margin="0,6,6,0"
+                Padding="10,4" 
+                Click="ResetAll_Click" />
         </Grid>
     </Grid>
 </UserControl>

@@ -5,6 +5,7 @@ using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using System;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -49,6 +50,11 @@ public sealed partial class QuadFFplayControl : UserControl, IDisposable
         public double SeekTargetSeconds;
         public double LastKnownSeconds;
         public bool   ResetPositionTracking;
+
+        // Written from the native refresh thread in OnFrameAvailable, read +
+        // cleared on the UI thread once per vsync.  A plain volatile bool is
+        // enough: missing one tick costs a single redraw, never correctness.
+        public volatile bool PendingFrame;
 
         public Button    PlayPauseButton = null!;
         public Slider    ProgressSlider  = null!;
@@ -97,6 +103,13 @@ public sealed partial class QuadFFplayControl : UserControl, IDisposable
             _progressTimer.Tick += (_, _) => PollAllSlotsProgress();
             _progressTimer.Start();
         }
+
+        // Coalesce frame work onto a single vsync-aligned tick.  All four
+        // OnFrameAvailable callbacks (native refresh thread) only flag the
+        // slot; the actual GPU copy + canvas invalidate happens at most once
+        // per vsync, in OnCompositionRendering.  At high playback speed this
+        // collapses dozens of redundant copies per second into one redraw.
+        CompositionTarget.Rendering += OnCompositionRendering;
 
         Unloaded += (_, _) => Dispose();
     }
@@ -154,19 +167,29 @@ public sealed partial class QuadFFplayControl : UserControl, IDisposable
 
     private void OnFrameAvailable(Slot slot)
     {
-        // Frame events drive only canvas invalidation; slider and time-label
-        // updates are handled by the progress timer so their cadence is
-        // independent of framerate and playback speed.  A brief stall in the
-        // master clock during atempo rebuild (after a speed change) no longer
-        // surfaces as a slider jump back to zero.
-        _dispatcherQueue?.TryEnqueue(DispatcherQueuePriority.Normal, () =>
+        // Fires on the native refresh thread, potentially many times per
+        // vsync at high playback speed.  Just record that a fresh frame is
+        // waiting; OnCompositionRendering picks the latest one up at vsync.
+        slot.PendingFrame = true;
+    }
+
+    private void OnCompositionRendering(object? sender, object e)
+    {
+        if (_disposed || _canvasDevice is null) return;
+
+        bool anyCopied = false;
+        foreach (var slot in _slots)
         {
-            if (slot.Player is null || _canvasDevice is null) return;
+            if (slot.Player is null || !slot.PendingFrame) continue;
+            // Clear before copy so a frame arriving mid-copy isn't lost.
+            slot.PendingFrame = false;
+
             EnsureSlotSurface(slot);
-            if (slot.Surface is null) return;
+            if (slot.Surface is null) continue;
             if (slot.Player.CopyFrameToVideoSurface(slot.Surface))
-                QuadCanvas.Invalidate();
-        });
+                anyCopied = true;
+        }
+        if (anyCopied) QuadCanvas.Invalidate();
     }
 
     private void PollAllSlotsProgress()
@@ -336,6 +359,39 @@ public sealed partial class QuadFFplayControl : UserControl, IDisposable
         slot.Player.Speed = speed;
     }
 
+    private void ResetAll_Click(object sender, RoutedEventArgs e) => ResetAll();
+
+    /// <summary>
+    /// Stops every slot's player and releases its native + GPU resources.
+    /// Per-slot UI elements (slider, time text, speed box, play button) are
+    /// reset to their initial state.  Shared GPU / canvas device are kept so
+    /// the next OpenSlot can reuse them without re-binding.
+    /// </summary>
+    public void ResetAll()
+    {
+        foreach (var slot in _slots)
+        {
+            slot.Dispose();
+
+            slot.SuppressSlider = true;
+            slot.ProgressSlider.Maximum = 1;
+            slot.ProgressSlider.Value   = 0;
+            slot.SuppressSlider = false;
+
+            slot.TimeText.Text  = "0:00 / 0:00";
+            slot.SpeedBox.Value = 1.0;
+            slot.PlayPauseButton.Content = ""; // Play glyph
+
+            slot.PendingFrame          = false;
+            slot.LastKnownSeconds      = 0;
+            slot.ResetPositionTracking = true;
+            slot.SliderDragging        = false;
+            slot.SeekTargetSeconds     = 0;
+        }
+
+        QuadCanvas.Invalidate();
+    }
+
     private static int TagToIndex(object sender)
     {
         if (sender is FrameworkElement fe && fe.Tag is not null &&
@@ -438,6 +494,8 @@ public sealed partial class QuadFFplayControl : UserControl, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+
+        CompositionTarget.Rendering -= OnCompositionRendering;
 
         _progressTimer?.Stop();
         _progressTimer = null;
