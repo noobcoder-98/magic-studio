@@ -1,0 +1,122 @@
+// ============================================================================
+// Public C API for MagicFFplay.cpp -- a C++ port of ffplay.c with SDL display
+// and subtitle pipeline removed, and Win2D-compatible BGRA texture output
+// added via D3D11VA + ID3D11VideoProcessor.
+//
+// All texture / device handles are AddRef'd; callers must Release.
+// ============================================================================
+#pragma once
+
+#include <cstdint>
+#include <d3d11.h>
+#include <dxgi.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct MagicFFplayHandle    MagicFFplayHandle;
+typedef struct MagicFFplaySharedGpu MagicFFplaySharedGpu;
+
+// Open a media file and start the demux + decode + audio threads.
+// Blocks until the file header has been parsed so the caller sees a valid
+// Duration / VideoSize on return.  Returns NULL on failure.  The handle owns
+// its own D3D11 device — equivalent to creating a private shared-gpu via
+// magic_ffplay_shared_gpu_create.
+MagicFFplayHandle* magic_ffplay_open(const char* path);
+
+// Same as magic_ffplay_open, but binds the new player to a caller-provided
+// shared GPU.  All players sharing a MagicFFplaySharedGpu use the same
+// underlying ID3D11Device, which lets a single CanvasDevice render frames
+// from all of them (cross-player CopyResource works only on same device).
+MagicFFplayHandle* magic_ffplay_open_with_shared_gpu(const char*           path,
+                                                     MagicFFplaySharedGpu* shared);
+
+// Create a refcounted shared GPU (refcount = 1 on return).  The caller owns
+// this initial reference and must release it via magic_ffplay_shared_gpu_release
+// when done.  Each magic_ffplay_open_with_shared_gpu call adds one ref;
+// releasing the player drops that ref.  Returns NULL on D3D11 init failure.
+MagicFFplaySharedGpu* magic_ffplay_shared_gpu_create();
+void                  magic_ffplay_shared_gpu_release(MagicFFplaySharedGpu* gpu);
+
+// AddRef'd IDXGIDevice* for the shared D3D11 device.  Use this to bind a
+// CanvasDevice to the same pipeline so wrapping textures from any player
+// sharing this GPU as CanvasBitmap works without device-mismatch errors.
+int magic_ffplay_shared_gpu_acquire_dxgi_device(MagicFFplaySharedGpu* gpu,
+                                                IDXGIDevice**         out);
+
+void    magic_ffplay_close           (MagicFFplayHandle* h);
+
+void    magic_ffplay_toggle_pause    (MagicFFplayHandle* h);
+int     magic_ffplay_is_paused       (MagicFFplayHandle* h);
+void    magic_ffplay_seek_us         (MagicFFplayHandle* h, int64_t position_us);
+void    magic_ffplay_step_frame      (MagicFFplayHandle* h);
+
+// Master clock in microseconds (audio-anchored by default).
+int64_t magic_ffplay_master_clock_us (MagicFFplayHandle* h);
+double  magic_ffplay_duration_seconds(MagicFFplayHandle* h);
+int     magic_ffplay_video_size      (MagicFFplayHandle* h, int* w, int* h_out);
+
+// Returns the AddRef'd BGRA ID3D11Texture2D* for the most recently presented
+// frame.  Returns 1 on success; *out is set.  Caller releases.
+int magic_ffplay_acquire_current_texture(MagicFFplayHandle* h, ID3D11Texture2D** out);
+
+// Cheap monotonic id for the currently-shown frame -- compare with the last
+// value to skip unnecessary CanvasBitmap rewrapping when nothing changed.
+uint64_t magic_ffplay_current_frame_version(MagicFFplayHandle* h);
+
+// Copy the current BGRA frame into a CPU buffer (tightly packed, no padding).
+// dst must be >= width*height*4 bytes.  Returns 1 on success.
+int magic_ffplay_copy_current_bgra(MagicFFplayHandle* h,
+                                   uint8_t* dst, int dst_capacity_bytes,
+                                   int* out_w, int* out_h);
+
+// GPU-to-GPU copy of the current BGRA frame into a caller-provided texture.
+// dst must live on the same ID3D11Device as magic_ffplay_acquire_dxgi_device,
+// be DXGI_FORMAT_B8G8R8A8_UNORM, and match the source frame's width/height.
+// Mirrors Windows.Media.Playback.MediaPlayer.CopyFrameToVideoSurface.
+// Returns 1 on success; 0 if no frame is ready or the contract is violated.
+int magic_ffplay_copy_current_to_texture(MagicFFplayHandle* h,
+                                         ID3D11Texture2D* dst);
+
+// Returns the AddRef'd IDXGIDevice* of the player's own D3D11 device so the
+// host can build a CanvasDevice bound to the same GPU pipeline.
+int magic_ffplay_acquire_dxgi_device(MagicFFplayHandle* h, IDXGIDevice** out);
+
+// Playback speed [0.1, 100.0].  Default 1.0.
+// Rebuilds the audio filter graph asynchronously on the next SDL callback.
+void   magic_ffplay_set_speed           (MagicFFplayHandle* h, double speed);
+double magic_ffplay_get_speed           (MagicFFplayHandle* h);
+
+// Pitch correction (1 = on / 0 = off).  Default on.
+// When on:  atempo time-stretches audio preserving pitch.
+// When off: asetrate+aresample shifts pitch proportionally to speed (tape-like).
+// Ignored at speed >= 5.0 — pitch correction is always on above that threshold.
+void magic_ffplay_set_pitch_correction  (MagicFFplayHandle* h, int enabled);
+int  magic_ffplay_get_pitch_correction  (MagicFFplayHandle* h);
+
+// Linear playback volume in [0.0, 1.0].  Default 1.0.  Applied in the SDL
+// audio callback via SDL_MixAudioFormat; takes effect on the next callback.
+void   magic_ffplay_set_volume          (MagicFFplayHandle* h, double volume);
+double magic_ffplay_get_volume          (MagicFFplayHandle* h);
+
+// Mute (1 = muted / 0 = unmuted).  Default 0.  Independent from volume —
+// unmuting restores the previously-set volume.
+void magic_ffplay_set_mute              (MagicFFplayHandle* h, int enabled);
+int  magic_ffplay_get_mute              (MagicFFplayHandle* h);
+
+// ---- Frame-available callback -----------------------------------------------
+// Fired on the native refresh thread each time a new BGRA frame is committed.
+// ctx is the opaque pointer passed to magic_ffplay_set_frame_callback.
+// After this fires, TryAcquireCurrentTexture returns the new frame immediately.
+typedef void (*MagicFFplayFrameCallback)(void* ctx);
+
+// Register (or clear) the callback.  Pass cb = NULL to unregister.
+// Safe to call at any time; takes effect on the next refresh cycle.
+void magic_ffplay_set_frame_callback(MagicFFplayHandle* h,
+                                     MagicFFplayFrameCallback cb,
+                                     void* ctx);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif

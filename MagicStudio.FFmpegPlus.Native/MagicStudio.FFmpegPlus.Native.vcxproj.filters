@@ -14,16 +14,10 @@
     <ClInclude Include="pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="FrameQueue.h">
+    <ClInclude Include="MagicFFmpegPlayer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="AudioRenderer.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="MediaDecoder.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="PacketQueue.h">
+    <ClInclude Include="MagicFFplay.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -31,16 +25,13 @@
     <ClCompile Include="pch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="FrameQueue.cpp">
+    <ClCompile Include="MagicFFmpegPlayer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="AudioRenderer.cpp">
+    <ClCompile Include="ffplay.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="MediaDecoder.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="PacketQueue.cpp">
+    <ClCompile Include="MagicFFplay.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

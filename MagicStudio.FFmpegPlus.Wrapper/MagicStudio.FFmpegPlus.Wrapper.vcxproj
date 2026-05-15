@@ -146,13 +146,14 @@
       <EnableUAC>false</EnableUAC>
     </Link>
   </ItemDefinitionGroup>
-  <!-- Native project header path needed by pch.h and MediaPlayerWrapper -->
+  <!-- Native project header + lib paths needed by pch.h, MediaPlayerWrapper,
+       and the FFmpeg/SDL2 link pragmas embedded in the Native static lib. -->
   <ItemDefinitionGroup>
     <ClCompile>
       <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\include;$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\dlls;$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(MSBuildProjectDirectory)\..\MagicStudio.FFmpegPlus.Native\native\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

@@ -1,64 +1,245 @@
 #include "pch.h"
 #include "MediaPlayerWrapper.h"
 
+// Give C++/CLI a complete type for each handle so it can emit valid metadata.
+// The actual layout lives in the Native static lib; we only pass pointers here.
+struct MagicPlayerHandle    {};
+struct MagicFFplayHandle    {};
+struct MagicFFplaySharedGpu {};
+
 using namespace msclr::interop;
 
 namespace MagicStudio {
 namespace FFmpegPlus {
 namespace Wrapper {
 
-MediaPlayer::MediaPlayer()
-    : _decoder(new MagicStudio::Native::MediaDecoder())
-{}
+// ============================================================================
+// MediaPlayer  (wraps MagicFFmpegPlayer / magic_player_* API)
+// ============================================================================
 
-MediaPlayer::~MediaPlayer() {
-    this->!MediaPlayer();
+static inline ::MagicPlayerHandle* HP(void* p) {
+    return reinterpret_cast<::MagicPlayerHandle*>(p);
 }
 
-MediaPlayer::!MediaPlayer() {
-    if (_decoder) {
-        _decoder->Close();
-        delete _decoder;
-        _decoder = nullptr;
-    }
+MediaPlayer::MediaPlayer() : _handle(nullptr) {}
+MediaPlayer::~MediaPlayer()  { this->!MediaPlayer(); }
+MediaPlayer::!MediaPlayer()  {
+    if (_handle) { magic_player_close(HP(_handle)); _handle = nullptr; }
 }
 
 bool MediaPlayer::Open(String^ path) {
-    std::string nativePath = marshal_as<std::string>(path);
-    return _decoder->Open(nativePath.c_str());
+    if (_handle) { magic_player_close(HP(_handle)); _handle = nullptr; }
+    std::string s = marshal_as<std::string>(path);
+    _handle = magic_player_open(s.c_str());
+    return _handle != nullptr;
 }
 
-void MediaPlayer::Play()  { _decoder->Play();  }
-void MediaPlayer::Pause() { _decoder->Pause(); }
-void MediaPlayer::Stop()  { _decoder->Stop();  }
-void MediaPlayer::Seek(Int64 positionUs) { _decoder->Seek(static_cast<int64_t>(positionUs)); }
+void MediaPlayer::Play()  { if (_handle && magic_player_is_paused(HP(_handle)))  magic_player_toggle_pause(HP(_handle)); }
+void MediaPlayer::Pause() { if (_handle && !magic_player_is_paused(HP(_handle))) magic_player_toggle_pause(HP(_handle)); }
+void MediaPlayer::Stop()  { if (!_handle) return; Pause(); magic_player_seek_us(HP(_handle), 0); }
+void MediaPlayer::Seek(Int64 us) { if (_handle) magic_player_seek_us(HP(_handle), static_cast<int64_t>(us)); }
 
 Int64 MediaPlayer::GetAudioPositionUs() {
-    return static_cast<Int64>(_decoder->GetAudioPositionUs());
+    return _handle ? static_cast<Int64>(magic_player_master_clock_us(HP(_handle))) : 0;
 }
 
-bool MediaPlayer::TryGetFrame(Int64 audioPtsUs, [Out] FrameData^% frame) {
-    std::vector<uint8_t> bgra;
-    int width = 0, height = 0;
-
-    if (!_decoder->TryGetFrameForTime(static_cast<int64_t>(audioPtsUs), bgra, width, height))
-        return false;
-
-    auto frameData = gcnew FrameData();
-    frameData->Width  = width;
-    frameData->Height = height;
-
-    array<Byte>^ managed = gcnew array<Byte>(static_cast<int>(bgra.size()));
-    pin_ptr<Byte> pin = &managed[0];
-    memcpy(pin, bgra.data(), bgra.size());
-    frameData->BgraData = managed;
-
-    frame = frameData;
-    return true;
+IntPtr MediaPlayer::AcquireDxgiDevice() {
+    IDXGIDevice* dev = nullptr;
+    return (magic_player_acquire_dxgi_device(&dev) && dev) ? IntPtr(dev) : IntPtr::Zero;
 }
 
-int    MediaPlayer::VideoWidth::get()  { return _decoder->GetVideoWidth();  }
-int    MediaPlayer::VideoHeight::get() { return _decoder->GetVideoHeight(); }
-double MediaPlayer::Duration::get()    { return _decoder->GetDurationSeconds(); }
+IntPtr MediaPlayer::TryAcquireCurrentTexture(UInt64% version, int% width, int% height) {
+    version = 0; width = 0; height = 0;
+    if (!_handle) return IntPtr::Zero;
+    UInt64 v = magic_player_current_frame_version(HP(_handle));
+    if (v == 0) return IntPtr::Zero;
+    ID3D11Texture2D* tex = nullptr;
+    if (!magic_player_acquire_current_texture(HP(_handle), &tex) || !tex) return IntPtr::Zero;
+    D3D11_TEXTURE2D_DESC d = {}; tex->GetDesc(&d);
+    version = v; width = (int)d.Width; height = (int)d.Height;
+    return IntPtr(tex);
+}
+
+int MediaPlayer::VideoWidth::get()  { int w=0,h=0; return _handle && magic_player_video_size(HP(_handle),&w,&h) ? w : 0; }
+int MediaPlayer::VideoHeight::get() { int w=0,h=0; return _handle && magic_player_video_size(HP(_handle),&w,&h) ? h : 0; }
+double MediaPlayer::Duration::get() { return _handle ? magic_player_duration_seconds(HP(_handle)) : 0; }
+
+// ============================================================================
+// FFplaySharedGpu  (wraps MagicFFplaySharedGpu / magic_ffplay_shared_gpu_*)
+// ============================================================================
+
+static inline ::MagicFFplaySharedGpu* HS(void* p) {
+    return reinterpret_cast<::MagicFFplaySharedGpu*>(p);
+}
+
+FFplaySharedGpu::FFplaySharedGpu() : _handle(nullptr) {
+    _handle = magic_ffplay_shared_gpu_create();
+}
+
+FFplaySharedGpu::~FFplaySharedGpu()  { this->!FFplaySharedGpu(); }
+FFplaySharedGpu::!FFplaySharedGpu()  {
+    if (_handle) { magic_ffplay_shared_gpu_release(HS(_handle)); _handle = nullptr; }
+}
+
+bool FFplaySharedGpu::IsValid::get() { return _handle != nullptr; }
+
+IntPtr FFplaySharedGpu::AcquireDxgiDevice() {
+    if (!_handle) return IntPtr::Zero;
+    IDXGIDevice* dev = nullptr;
+    return (magic_ffplay_shared_gpu_acquire_dxgi_device(HS(_handle), &dev) && dev)
+        ? IntPtr(dev) : IntPtr::Zero;
+}
+
+void* FFplaySharedGpu::GetNativeHandle() { return _handle; }
+
+// ============================================================================
+// FFplayPlayer  (wraps MagicFFplay / magic_ffplay_* API)
+// ============================================================================
+
+static inline ::MagicFFplayHandle* HF(void* p) {
+    return reinterpret_cast<::MagicFFplayHandle*>(p);
+}
+
+// Called by the native refresh thread.  ctx is GCHandle::ToIntPtr(_selfPin).
+// Reconstructs the FFplayPlayer^ and raises VideoFrameAvailable on the caller's
+// (background) thread — consistent with MediaPlayer.VideoFrameAvailable.
+void FFplayPlayer::NativeCallback(IntPtr ctx) {
+    auto handle = GCHandle::FromIntPtr(ctx);
+    if (!handle.IsAllocated || handle.Target == nullptr) return;
+    auto self = safe_cast<FFplayPlayer^>(handle.Target);
+    self->VideoFrameAvailable(self, EventArgs::Empty);
+}
+
+void FFplayPlayer::InstallFrameCallback() {
+    if (!_handle) return;
+    _selfPin       = GCHandle::Alloc(this);
+    _frameDelegate = gcnew NativeFrameAvailableCb(&FFplayPlayer::NativeCallback);
+    _delegatePin   = GCHandle::Alloc(_frameDelegate);
+    auto fp = (MagicFFplayFrameCallback)(void*)
+              Marshal::GetFunctionPointerForDelegate(_frameDelegate);
+    magic_ffplay_set_frame_callback(HF(_handle), fp,
+                                    GCHandle::ToIntPtr(_selfPin).ToPointer());
+}
+
+void FFplayPlayer::RemoveFrameCallback() {
+    // Clear the native side first so the refresh thread stops calling back
+    // before we free the GCHandle pins.
+    if (_handle)
+        magic_ffplay_set_frame_callback(HF(_handle), nullptr, nullptr);
+    if (_delegatePin.IsAllocated) { _delegatePin.Free(); }
+    if (_selfPin.IsAllocated)     { _selfPin.Free(); }
+    _frameDelegate = nullptr;
+}
+
+FFplayPlayer::FFplayPlayer()
+    : _handle(nullptr), _frameDelegate(nullptr) {}
+
+FFplayPlayer::~FFplayPlayer()  { this->!FFplayPlayer(); }
+FFplayPlayer::!FFplayPlayer()  {
+    RemoveFrameCallback();
+    if (_handle) { magic_ffplay_close(HF(_handle)); _handle = nullptr; }
+}
+
+bool FFplayPlayer::Open(String^ path) {
+    RemoveFrameCallback();
+    if (_handle) { magic_ffplay_close(HF(_handle)); _handle = nullptr; }
+    std::string s = marshal_as<std::string>(path);
+    _handle = magic_ffplay_open(s.c_str());
+    if (_handle) InstallFrameCallback();
+    return _handle != nullptr;
+}
+
+bool FFplayPlayer::Open(String^ path, FFplaySharedGpu^ shared) {
+    RemoveFrameCallback();
+    if (_handle) { magic_ffplay_close(HF(_handle)); _handle = nullptr; }
+    if (shared == nullptr || !shared->IsValid) return false;
+    std::string s = marshal_as<std::string>(path);
+    _handle = magic_ffplay_open_with_shared_gpu(
+        s.c_str(),
+        reinterpret_cast<::MagicFFplaySharedGpu*>(shared->GetNativeHandle()));
+    if (_handle) InstallFrameCallback();
+    return _handle != nullptr;
+}
+
+void FFplayPlayer::Play()  { if (_handle && magic_ffplay_is_paused(HF(_handle)))  magic_ffplay_toggle_pause(HF(_handle)); }
+void FFplayPlayer::Pause() { if (_handle && !magic_ffplay_is_paused(HF(_handle))) magic_ffplay_toggle_pause(HF(_handle)); }
+void FFplayPlayer::Stop()  { if (!_handle) return; Pause(); magic_ffplay_seek_us(HF(_handle), 0); }
+void FFplayPlayer::SetPosition(TimeSpan position, bool retrieveFrame)
+{
+	if (_lastPosition != position) {
+        _lastPosition = position;
+        if (retrieveFrame) {
+            Seek(static_cast<Int64>(position.TotalMilliseconds * 1000));
+        }
+    }
+}
+
+TimeSpan FFplayPlayer::GetPosition()
+{
+	return _position;
+}
+
+void FFplayPlayer::ResetPlayerPosition(TimeSpan position)
+{
+    Seek(static_cast<Int64>(position.TotalMilliseconds * 1000));
+}
+
+void FFplayPlayer::SetTimelineOffset(TimeSpan offset)
+{
+    _timelineOffset = offset;
+}
+
+TimeSpan FFplayPlayer::GetTimelineOffset()
+{
+    return _timelineOffset;
+}
+
+void FFplayPlayer::SetVolume(double volume) { if (_handle) magic_ffplay_set_volume(HF(_handle), volume); }
+double FFplayPlayer::GetVolume() { return _handle ? magic_ffplay_get_volume(HF(_handle)) : 0; }
+void FFplayPlayer::SetMute(bool mute) { if (_handle) magic_ffplay_set_mute(HF(_handle), mute ? 1 : 0); }
+bool FFplayPlayer::IsMuted() { return _handle ? magic_ffplay_get_mute(HF(_handle)) != 0 : false; }
+void FFplayPlayer::Seek(Int64 us)  { if (_handle) magic_ffplay_seek_us(HF(_handle), static_cast<int64_t>(us)); }
+void FFplayPlayer::StepFrame()     { if (_handle) magic_ffplay_step_frame(HF(_handle)); }
+
+Int64 FFplayPlayer::GetAudioPositionUs() {
+    return _handle ? static_cast<Int64>(magic_ffplay_master_clock_us(HF(_handle))) : 0;
+}
+
+IntPtr FFplayPlayer::AcquireDxgiDevice() {
+    if (!_handle) return IntPtr::Zero;
+    IDXGIDevice* dev = nullptr;
+    return (magic_ffplay_acquire_dxgi_device(HF(_handle), &dev) && dev) ? IntPtr(dev) : IntPtr::Zero;
+}
+
+IntPtr FFplayPlayer::TryAcquireCurrentTexture(UInt64% version, int% width, int% height) {
+    version = 0; width = 0; height = 0;
+    if (!_handle) return IntPtr::Zero;
+    UInt64 v = magic_ffplay_current_frame_version(HF(_handle));
+    if (v == 0) return IntPtr::Zero;
+    ID3D11Texture2D* tex = nullptr;
+    if (!magic_ffplay_acquire_current_texture(HF(_handle), &tex) || !tex) return IntPtr::Zero;
+    D3D11_TEXTURE2D_DESC d = {}; tex->GetDesc(&d);
+    version = v; width = (int)d.Width; height = (int)d.Height;
+    return IntPtr(tex);
+}
+
+UInt64 FFplayPlayer::PeekFrameVersion() {
+    return _handle ? static_cast<UInt64>(magic_ffplay_current_frame_version(HF(_handle))) : 0;
+}
+
+bool FFplayPlayer::CopyFrameToTexture(IntPtr texturePtr) {
+    if (!_handle || texturePtr == IntPtr::Zero) return false;
+    auto* tex = reinterpret_cast<ID3D11Texture2D*>(texturePtr.ToPointer());
+    return magic_ffplay_copy_current_to_texture(HF(_handle), tex) != 0;
+}
+
+int FFplayPlayer::VideoWidth::get()  { int w=0,h=0; return _handle && magic_ffplay_video_size(HF(_handle),&w,&h) ? w : 0; }
+int FFplayPlayer::VideoHeight::get() { int w=0,h=0; return _handle && magic_ffplay_video_size(HF(_handle),&w,&h) ? h : 0; }
+double FFplayPlayer::Duration::get() { return _handle ? magic_ffplay_duration_seconds(HF(_handle)) : 0; }
+
+void   FFplayPlayer::SetSpeed(double speed)         { if (_handle) magic_ffplay_set_speed(HF(_handle), speed); }
+double FFplayPlayer::GetSpeed()                     { return _handle ? magic_ffplay_get_speed(HF(_handle)) : 1.0; }
+void   FFplayPlayer::SetPitchCorrection(bool on)    { if (_handle) magic_ffplay_set_pitch_correction(HF(_handle), on ? 1 : 0); }
+bool   FFplayPlayer::GetPitchCorrection()           { return _handle ? magic_ffplay_get_pitch_correction(HF(_handle)) != 0 : true; }
 
 }}} // namespace MagicStudio::FFmpegPlus::Wrapper

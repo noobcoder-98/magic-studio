@@ -10,9 +10,21 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
+
+        QuadPlayer.OpenRequested += OnOpenRequested;
+
+        Closed += (_, _) => QuadPlayer.Dispose();
     }
 
-    private async void OpenFile_Click(object sender, RoutedEventArgs e)
+    private async void OnOpenRequested(object? sender,
+        QuadFFplayControl.SlotOpenRequestedEventArgs e)
+    {
+        var path = await PickVideoAsync();
+        if (path is null) return;
+        QuadPlayer.OpenSlot(e.Index, path);
+    }
+
+    private async System.Threading.Tasks.Task<string?> PickVideoAsync()
     {
         var picker = new FileOpenPicker();
         WinRT.Interop.InitializeWithWindow.Initialize(picker,
@@ -27,12 +39,6 @@ public sealed partial class MainWindow : Window
         picker.FileTypeFilter.Add("*");
 
         var file = await picker.PickSingleFileAsync();
-        if (file is null) return;
-
-        MediaPlayer.Pause();
-        if (MediaPlayer.Open(file.Path))
-        {
-            MediaPlayer.Play();
-        }
+        return file?.Path;
     }
 }

@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "MagicStudio.FFmpegPlus": {
+      "commandName": "Project",
+      "nativeDebugging": true
+    }
+  }
+}
