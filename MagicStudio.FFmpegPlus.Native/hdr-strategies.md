@@ -231,6 +231,167 @@ Treat as **fatal** — không có VideoContext2 thì HDR không tone-map đúng 
 - **Không HDR10+ dynamic metadata**: `AV_FRAME_DATA_DYNAMIC_HDR_PLUS` không được đọc → static tone-map cho toàn stream.
 - **Tone-map algorithm phụ thuộc driver**: không deterministic giữa các GPU vendor; QA cross-platform khó.
 
+## 10. Ba bước xử lý — bản đồ cấp cao
+
+Toàn bộ pipeline HDR rút gọn về **đúng 3 bước** mỗi frame, với 3 vai trò rõ ràng: 2 bước đầu là pure function (không state), bước cuối độc quyền giữ state và đồng bộ với driver.
+
+```mermaid
+flowchart TD
+    AVF["AVFrame mỗi frame<br/>(NV12 hwframe + color tags + side data)"]
+
+    subgraph S1["Bước 1 — Detection: Đây là loại video gì?"]
+        D["frame_to_dxgi_color_space<br/>Pure — không state"]
+        D_OUT["inCs<br/>DXGI_COLOR_SPACE_TYPE"]
+        D --> D_OUT
+    end
+
+    subgraph S2["Bước 2 — Metadata: Master sáng tối thế nào?"]
+        M["frame_to_hdr10_metadata<br/>Pure — best-effort"]
+        M_OUT["hdrMeta hoặc nullptr<br/>DXGI_HDR_METADATA_HDR10"]
+        M --> M_OUT
+    end
+
+    subgraph S3["Bước 3 — Apply + Triple-cache: Dặn driver vừa đủ"]
+        E["ensure_processor<br/>Stateful — cache size / color / meta"]
+        E_OUT["VideoProcessor đã sync<br/>với frame hiện tại"]
+        E --> E_OUT
+    end
+
+    AVF --> D
+    AVF --> M
+    D_OUT --> E
+    M_OUT --> E
+    E_OUT --> BLIT["VideoProcessorBlt<br/>NV12 HDR → BGRA SDR<br/>(driver tone-map)"]
+
+    classDef pure     fill:#e1f5ff,stroke:#0277bd
+    classDef stateful fill:#fff4e1,stroke:#ef6c00
+    classDef io       fill:#e8f5e9,stroke:#2e7d32
+    class D,M pure
+    class E stateful
+    class AVF,BLIT io
+```
+
+### Vai trò 3 bước trong 1 bảng
+
+| Bước | Câu hỏi trả lời | Tính chất | Nếu sai / thiếu |
+|---|---|---|---|
+| **1. Detection** | "Đây là HDR10 / HLG / SDR loại nào?" | Pure, chạy lại mỗi frame OK | Sai màu nặng (HDR ↔ SDR nhầm enum) |
+| **2. Metadata** | "Master ở dải sáng nào? Đỉnh thực bao nhiêu nits?" | Pure, **best-effort** — không có vẫn chạy | Tone-map kém tối ưu (highlight bị nén bảo thủ) |
+| **3. Apply + cache** | "Đã dặn driver chưa? Có cần dặn lại không?" | Stateful, gần miễn phí ở steady state | Tốn CPU vô ích **hoặc** driver giữ state cũ → wash-out |
+
+### Vì sao tách pure vs stateful
+
+- **Bước 1 và 2 là pure function**: input AVFrame → output enum/struct, không đụng driver, không giữ state. Unit-test dễ, gọi lại mỗi frame không tốn gì.
+- **Bước 3 độc quyền state**: toàn bộ "đã set gì cho VideoProcessor" tập trung ở `FfplayGpu` struct. Không có code path nào khác lén gọi `SetStreamColorSpace1` / `SetStreamHDRMetaData` → cache luôn phản ánh đúng state thật của driver.
+
+**Ý nghĩa thực tế**: nếu bug "ảnh HDR sai màu" xuất hiện, ta biết đi đâu để debug:
+- Sai enum → bước 1 (`frame_to_dxgi_color_space`).
+- Tone-map kỳ lạ → bước 2 (`frame_to_hdr10_metadata`), thường là sai unit conversion.
+- Sai state khi chuyển clip → bước 3 (`ensure_processor`), thường là cache miss logic hoặc thiếu HDR→SDR clear.
+
+## 11. Driver-side: từ state đến pixel
+
+3 bước ở §10 mô tả **những gì app làm**. Mục này mô tả **những gì xảy ra phía driver** sau khi app set xong state. Quan trọng: app **không xử lý metadata, không tính pixel** — chỉ "gán vào đầu" để driver tự quyết thuật toán.
+
+### 11.1 Driver phân nhánh dựa trên cặp (inCs, outCs)
+
+Cùng line `VideoProcessorBlt` (`MagicFFplay.cpp:399-400`) chạy mỗi frame, nhưng driver build pipeline khác nhau tuỳ cặp input/output color space app khai báo:
+
+| inCs khai báo | outCs (cố định) | Pipeline driver chạy |
+|---|---|---|
+| `STUDIO_G2084_LEFT_P2020` (HDR10 PQ) | `RGB_FULL_G22_NONE_P709` (SDR) | **Full tone-map**: PQ EOTF → nén luminance (param từ `hdrMeta`) → BT.2020→BT.709 → gamma 2.2 → 8-bit |
+| `STUDIO_GHLG_TOPLEFT_P2020` (HLG) | `RGB_FULL_G22_NONE_P709` (SDR) | **HLG tone-map**: HLG OETF⁻¹ → nén → gamut → gamma 2.2 |
+| `STUDIO_G22_LEFT_P2020` (SDR wide-gamut) | `RGB_FULL_G22_NONE_P709` (SDR) | Gamut convert BT.2020→BT.709 (không tone-map luminance) |
+| `STUDIO_G22_LEFT_P709` (SDR BT.709) | `RGB_FULL_G22_NONE_P709` (SDR) | Chỉ YCbCr→RGB matrix + studio→full range |
+| `STUDIO_G22_LEFT_P601` (SDR BT.601) | `RGB_FULL_G22_NONE_P709` (SDR) | BT.601→BT.709 matrix + range stretch |
+
+Driver **so sánh** inCs với outCs:
+- Cùng gamut + cùng transfer → chỉ chuyển range / YCbCr→RGB (cheap path).
+- Khác gamut → thêm ma trận 3×3 BT.2020→BT.709.
+- Khác transfer (HDR vs SDR) → bật tone-map pipeline đầy đủ.
+
+App **không cần biết** driver chọn pipeline nào — chỉ cần khai đúng cặp (inCs, outCs). Cùng codepath `ensure_processor` + `nv12_to_bgra` chạy cho mọi loại input; phân nhánh xảy ra trong driver.
+
+### 11.2 `hdrMeta` parameterize tone-map curve
+
+`hdrMeta` chỉ có ý nghĩa khi tone-map thực sự xảy ra (2 hàng đầu của bảng 11.1). Trong pipeline đó, nó dùng để **chọn điểm uốn của curve nén luminance**:
+
+```
+peak_src = hdrMeta.MaxMasteringLuminance   // ví dụ 1000 nits
+content  = hdrMeta.MaxCLL                  // ví dụ 800 nits
+peak_dst = ~100 nits (SDR)
+
+→ Driver build curve nén [0..peak_src] → [0..peak_dst],
+  giữ tuyến tính phần thấp, roll-off phần > content
+```
+
+| Trạng thái | Kết quả cho pixel 800 nits |
+|---|---|
+| **Có metadata** (peak_src = 1000) | → ~95 nits SDR (giữ gần đỉnh, có chi tiết highlight) |
+| **Không metadata** (driver assume worst case 10000 nits) | → ~30 nits SDR (bị đè xuống vùng tối, mất chi tiết) |
+
+→ Đó là lý do `frame_to_hdr10_metadata` được mô tả là **best-effort** ở §4: không có metadata không vỡ pipeline, chỉ làm tone-map bảo thủ.
+
+### 11.3 Bản đồ "state app set" ↔ "pipeline driver chạy"
+
+```mermaid
+flowchart LR
+    subgraph APP["Phía app (ensure_processor + nv12_to_bgra)"]
+        direction TB
+        A1["SetStreamColorSpace1(inCs)<br/>line 331"]
+        A2["SetOutputColorSpace1(SDR P709)<br/>line 332-333"]
+        A3["SetStreamHDRMetaData(hdrMeta)<br/>line 340-342"]
+        A4["VideoProcessorBlt<br/>line 399-400"]
+    end
+
+    subgraph DRV["Phía driver (black box)"]
+        direction TB
+        D1["Đọc inCs<br/>→ chọn EOTF decode"]
+        D2["Đọc outCs<br/>→ chọn OETF encode + gamut đích"]
+        D3["Đọc hdrMeta<br/>→ parameterize tone-map curve"]
+        D4["So sánh in ↔ out<br/>→ build pipeline phù hợp"]
+        D5["Run trên mỗi pixel:<br/>EOTF → nén → matrix → OETF → 8-bit"]
+    end
+
+    A1 --> D1
+    A2 --> D2
+    A3 --> D3
+    D1 --> D4
+    D2 --> D4
+    D3 --> D4
+    A4 -->|trigger| D5
+    D4 --> D5
+    D5 --> OUT["BGRA SDR texture"]
+
+    classDef app fill:#fff4e1,stroke:#ef6c00
+    classDef drv fill:#e1f5ff,stroke:#0277bd
+    classDef io  fill:#e8f5e9,stroke:#2e7d32
+    class A1,A2,A3,A4 app
+    class D1,D2,D3,D4,D5 drv
+    class OUT io
+```
+
+### 11.4 Hệ quả thiết kế
+
+- **App không có shader, không có LUT, không tính một pixel nào** cho tone-map. Toàn bộ phép tính trong driver.
+- **Output cố định SDR** (§6) là điều kiện đủ để driver tự kích hoạt tone-map khi input là HDR. Nếu output cũng là HDR, driver có thể bypass tone-map (pass-through).
+- **Cùng codepath cho HDR và SDR**: driver phân nhánh nội bộ, không phải app. Code app đơn giản, ít branch, ít test surface.
+- **Chất lượng tone-map = chất lượng driver**: cùng file HDR render trên Intel / NVIDIA / AMD có thể khác sắc thái highlight (xem §9). Không có cách "force algorithm" — đó là trade-off cố hữu của chiến lược driver-side.
+
+### 11.5 Trả lời ngắn câu hỏi thường gặp
+
+> "Nếu mình không truyền `hdrMeta` thì output có sai không?"
+
+Không sai về **format** (vẫn ra BGRA SDR đúng), nhưng sai về **intent**: highlight bị nén bảo thủ, ảnh tối hơn ý đồ colorist. Acceptable cho preview, không acceptable cho master/grade.
+
+> "App có cần biết driver chọn pipeline nào không?"
+
+Không. App chỉ cần khai đúng (inCs, outCs, hdrMeta). Driver tự quyết. Đây là điểm hấp dẫn của `ID3D11VideoProcessor` — interface khai báo, không phải imperative.
+
+> "Tại sao không tự viết shader tone-map cho deterministic?"
+
+Trade-off đã chọn ở §1: driver tối ưu HW theo vendor + update không cần rebuild app. Tự shader = mất 2 lợi ích đó để đổi lấy consistency cross-vendor.
+
 ## Cross-references
 
 | Chủ đề | File / mục |
